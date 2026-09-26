@@ -366,7 +366,9 @@ enum NaturalBrushEngine {
         let dx = vibration * CGFloat(rng.uniform(-1, 1))
         let dy = vibration * CGFloat(rng.uniform(-1, 1))
         let width = diameter * preset.weight * max(0.05, pressure)
-        let alpha = min(1, max(0, max(0.8, pressure) * baseAlpha(preset, diameter: diameter) * gain * alphaScale * CGFloat(rng.uniform(0.9, 1.1)) / 255))
+        // Marker ends now press past 1 (pressureMin 1.2). That widens the tip; it should not
+        // push the body to full opacity, or the heel stops reading darker.
+        let alpha = min(1, max(0, min(1, max(0.8, pressure)) * baseAlpha(preset, diameter: diameter) * gain * alphaScale * CGFloat(rng.uniform(0.9, 1.1)) / 255))
         guard width > 0.05, alpha > 0 else { return [] }
         return [NaturalDab(x: Float(point.x + dx), y: Float(point.y + dy), radius: Float(width / 2), alpha: Float(alpha))]
     }
