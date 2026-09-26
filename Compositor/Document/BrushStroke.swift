@@ -29,6 +29,8 @@ nonisolated struct BrushSettings: Sendable {
     var wiggle: CGFloat = 0
     /// Tests set this so the same gesture replays the same dabs. Nil picks a seed per stroke.
     var naturalSeed: UInt64? = nil
+    /// Whole-stroke length when it is known (a script, a hatch line). Nil tapers a live drag.
+    var naturalSpan: CGFloat? = nil
 }
 
 nonisolated struct BrushPatch: @unchecked Sendable {
@@ -76,6 +78,15 @@ nonisolated enum BrushRaster {
         context.setAlpha(alpha)
         context.setFillColor(color)
         context.fill(bounds)
+        context.restoreGState()
+    }
+    /// Source-over of an image already coloured from coverage, in the same orientation as `fill`.
+    static func drawShaded(_ image: CGImage, in rect: CGRect, context: CGContext) {
+        context.saveGState()
+        context.interpolationQuality = .none
+        context.translateBy(x: rect.minX, y: rect.maxY)
+        context.scaleBy(x: 1, y: -1)
+        context.draw(image, in: CGRect(origin: .zero, size: rect.size))
         context.restoreGState()
     }
     /// Soft-brush falloff across the region between the hardness radius and the rim:
@@ -304,18 +315,17 @@ final class BrushStroke {
     /// Lays p5.brush dabs along the same settled-curve / straight-tail split as the round tip.
     /// The tail is preview only. Promoting it walks that piece once, from the committed cursor.
     private func appendNatural(_ point: CGPoint, hardwarePressure: CGFloat?) throws {
-        guard let preset = settings.natural.preset else { return }
+        guard settings.natural.preset != nil else { return }
         let unit = NaturalBrushMath.unitPressure(hardware: hardwarePressure, from: samples.last, to: point, diameter: settings.diameter)
-        let mapped = NaturalBrushMath.presetPressure(unit: unit, preset: preset)
         samples.append(point)
-        naturalPressures.append(mapped)
+        naturalPressures.append(unit)
         if samples.count > 4 {
             samples.removeFirst()
             naturalPressures.removeFirst()
         }
         let n = samples.count
         var settled: [(CGPoint, CGPoint)] = []
-        var settledPressure = (mapped, mapped)
+        var settledPressure = (unit, unit)
         if n == 1 {
             settled = [(point, point)]
         } else if n >= 3 {
@@ -323,7 +333,7 @@ final class BrushStroke {
             settledPressure = (naturalPressures[n - 3], naturalPressures[n - 2])
         }
         let tail = n >= 2 ? [(samples[n - 2], point)] : [(CGPoint, CGPoint)]()
-        let tailPressure = n >= 2 ? (naturalPressures[n - 2], mapped) : (mapped, mapped)
+        let tailPressure = n >= 2 ? (naturalPressures[n - 2], unit) : (unit, unit)
         try renderNatural(settled: settled, pressure: settledPressure, tail: tail, tailPressure: tailPressure, ending: false)
     }
 
@@ -346,13 +356,15 @@ final class BrushStroke {
     }
 
     private func renderNatural(settled: [(CGPoint, CGPoint)], pressure: (CGFloat, CGFloat), tail: [(CGPoint, CGPoint)], tailPressure: (CGFloat, CGFloat), ending: Bool) throws {
-        let walked = NaturalBrushEngine.walk(segments: settled, pressureStart: pressure.0, pressureEnd: pressure.1, cursor: naturalCursor, kind: settings.natural, diameter: settings.diameter, seed: naturalSeed, gain: naturalGain, wiggle: settings.wiggle, ending: ending)
+        let walked = NaturalBrushEngine.walk(segments: settled, pressureStart: pressure.0, pressureEnd: pressure.1, cursor: naturalCursor, kind: settings.natural, diameter: settings.diameter, seed: naturalSeed, gain: naturalGain, wiggle: settings.wiggle, ending: ending, span: settings.naturalSpan)
         naturalCursor = walked.cursor
         var settledDabs = walked.dabs
-        if ending {
-            settledDabs += NaturalBrushEngine.endCaps(at: naturalCursor.anchor ?? settled.last?.1 ?? samples.last, pressure: pressure.1, kind: settings.natural, diameter: settings.diameter, seed: naturalSeed, gain: naturalGain)
+        if ending, let preset = settings.natural.preset {
+            let taper = max(6, settings.diameter * 0.4)
+            let endPressure = NaturalBrushMath.pressure(unit: pressure.1, plotted: naturalCursor.traveled, span: settings.naturalSpan, remain: 0, taperLength: taper, preset: preset, seed: naturalSeed, ending: true)
+            settledDabs += NaturalBrushEngine.endCaps(at: naturalCursor.anchor ?? settled.last?.1 ?? samples.last, pressure: endPressure, kind: settings.natural, diameter: settings.diameter, seed: naturalSeed, gain: naturalGain)
         }
-        let tailWalk = NaturalBrushEngine.walk(segments: tail, pressureStart: tailPressure.0, pressureEnd: tailPressure.1, cursor: naturalCursor, kind: settings.natural, diameter: settings.diameter, seed: naturalSeed, gain: naturalGain, wiggle: settings.wiggle, ending: false)
+        let tailWalk = NaturalBrushEngine.walk(segments: tail, pressureStart: tailPressure.0, pressureEnd: tailPressure.1, cursor: naturalCursor, kind: settings.natural, diameter: settings.diameter, seed: naturalSeed, gain: naturalGain, wiggle: settings.wiggle, ending: false, span: settings.naturalSpan)
         try compositeNatural(settled: settledDabs, tail: tailWalk.dabs)
     }
 
@@ -665,6 +677,9 @@ final class BrushStroke {
                     tile.context.setBlendMode(.destinationOut)
                     BrushRaster.fill(Self.eraseColor, coverage: mask, in: local, alpha: settings.opacity, context: tile.context)
                     tile.context.restoreGState()
+                } else if settings.natural != .round, !isMask,
+                          let shaded = NaturalShade.brushImage(from: coverage, red: settings.red, green: settings.green, blue: settings.blue, opacity: settings.opacity) {
+                    BrushRaster.drawShaded(shaded, in: local, context: tile.context)
                 } else {
                     BrushRaster.fill(paintColor, coverage: mask, in: local, alpha: settings.opacity, context: tile.context)
                 }

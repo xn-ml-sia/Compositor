@@ -74,7 +74,8 @@ extension EditorSession {
         brushPointer = point
         if pressure != nil { brushPointingPressure = pressure }
         guard let painted = smoothed(point) else { return }
-        do { try brushStroke.append(painted, pressure: brushPointingPressure); lastBrushPoint?.point = painted; brushRevision += 1 }
+        let next = steered(painted)
+        do { try brushStroke.append(next, pressure: brushPointingPressure); lastBrushPoint?.point = next; brushRevision += 1 }
         catch { cancelBrush(); brushError = error.localizedDescription }
     }
     /// Where the brush actually is, with Smoothing on: it trails the pointer on a string, and only
@@ -91,6 +92,30 @@ extension EditorSession {
         let moved = CGPoint(x: anchor.x + delta.x * step, y: anchor.y + delta.y * step)
         brushAnchor = moved
         return moved
+    }
+
+    /// A live drag follows the active flow field. Scripted points are steered once, before they reach the brush.
+    private func steered(_ point: CGPoint) -> CGPoint {
+        guard !isScriptedBrushStroke, tool == .brush, let field = flowField, abs(field.wiggle) > 1e-4, let last = lastBrushPoint?.point else { return point }
+        let length = hypot(point.x - last.x, point.y - last.y)
+        guard length > 0.2 else { return point }
+        let direction = atan2(point.y - last.y, point.x - last.x) * 180 / CGFloat.pi
+        let heading = (direction - field.angle(at: last)) * CGFloat.pi / 180
+        return CGPoint(x: last.x + CGFloat(cos(heading)) * length, y: last.y + CGFloat(sin(heading)) * length)
+    }
+
+    func applyFlowField(name: String, wiggle: CGFloat? = nil, seed: UInt64? = nil, columns: Int? = nil, rows: Int? = nil, angles: [CGFloat]? = nil) {
+        if let wiggle { flowWiggle = min(8, max(-8, wiggle)) }
+        let key = name.lowercased().replacingOccurrences(of: " ", with: "")
+        guard let size = document?.size else { flowField = nil; return }
+        if let field = FlowField.make(name: key, wiggle: flowWiggle, seed: seed ?? 1, canvas: size, columns: columns, rows: rows, angles: angles) {
+            flowField = field
+        } else if key == "none" || key == "off" || key == "nofield" {
+            flowField = nil
+        } else {
+            brushError = "Unknown flow field “\(name)”."
+            flowField = nil
+        }
     }
     /// Where a Shift-click paints a line from: the end of the last stroke, while the same layer (or mask) is the target.
     func shiftLineStart() -> CGPoint? {
@@ -251,7 +276,7 @@ extension EditorSession {
     /// `path` fills that polygon instead of the current selection. A stroke script passes one;
     /// the menu command leaves it nil and keeps requiring a selection.
     @MainActor
-    func watercolorFillSelection(path override: CGPath? = nil, red: CGFloat? = nil, green: CGFloat? = nil, blue: CGFloat? = nil, seed explicitSeed: UInt64? = nil) async {
+    func watercolorFillSelection(path override: CGPath? = nil, red: CGFloat? = nil, green: CGFloat? = nil, blue: CGFloat? = nil, seed explicitSeed: UInt64? = nil, options explicitOptions: WatercolorOptions? = nil) async {
         let outline = override ?? selection?.path
         let region = outline.map { DocumentSelection(path: $0) }
         guard canEditLayers, let document, let layer = activeLayer, layer.isGroup == false, layer.adjustment == nil,
@@ -265,10 +290,13 @@ extension EditorSession {
         let contours = SelectionContours.make(from: outline)
         guard !contours.isEmpty else { brushError = "Select an area to fill with watercolor."; return }
         let seed = explicitSeed ?? brushSettings.naturalSeed ?? UInt64.random(in: 1...UInt64(UInt32.max))
-        let passes = WatercolorFill.passes(contours: contours, seed: seed)
+        let options = (explicitOptions ?? watercolorOptions).clamped()
+        let passes = WatercolorFill.passes(contours: contours, seed: seed, options: options)
         guard !passes.isEmpty else { return }
         let canvas = CGRect(origin: .zero, size: document.size)
-        let area = region.coverageBounds.integral.intersection(canvas).integral.intersection(canvas)
+        let tight = region.coverageBounds.integral.intersection(canvas)
+        let margin = WatercolorFill.bleedMargin(bounds: tight, options: options)
+        let area = tight.insetBy(dx: -margin, dy: -margin).intersection(canvas).integral.intersection(canvas)
         guard area.width >= 1, area.height >= 1, area.width * area.height <= CGFloat(DocumentLimits.documentPixelBudget) else {
             brushError = ProjectError.tooLarge.localizedDescription
             return
@@ -282,7 +310,7 @@ extension EditorSession {
             var settings = brushSettings
             settings.natural = .round
             let stroke = try makeRasterEdit(for: layer, settings: settings, growsMask: true)
-            if override != nil { stroke.selectionClip = try region.clip(canvas: document.size) }
+            stroke.selectionClip = options.clip ? try region.clip(canvas: document.size) : nil
             stroke.editName = "Watercolor Fill"
             guard area.width * area.height <= CGFloat(max(1, stroke.pixelLimit)) else { throw ProjectError.tooLarge }
             let buffer = try BrushRaster.context(width: Int(area.width), height: Int(area.height), mask: isMaskSelected)
@@ -295,6 +323,8 @@ extension EditorSession {
                 brushRevision += 1
                 await Task.yield()
             }
+            NaturalShade.darkenRims(in: buffer)
+            if let image = buffer.makeImage() { try stroke.compositeImage(image, in: area) }
             guard !stroke.patches.isEmpty else { return }
             try commitPaintSnapshot(stroke)
         } catch { brushError = error.localizedDescription }
@@ -303,7 +333,7 @@ extension EditorSession {
     /// Hatches the selection with the current natural brush (HB when the tip is still Round).
     /// `path` hatches that polygon instead of the current selection.
     @MainActor
-    func hatchSelection(path override: CGPath? = nil, angle: CGFloat = 45, spacing explicitSpacing: CGFloat? = nil, seed explicitSeed: UInt64? = nil) async {
+    func hatchSelection(path override: CGPath? = nil, angle: CGFloat = 45, spacing explicitSpacing: CGFloat? = nil, seed explicitSeed: UInt64? = nil, options explicitOptions: HatchOptions? = nil) async {
         let outline = override ?? selection?.path
         guard canEditLayers, let document, let layer = activeLayer, layer.isGroup == false, layer.adjustment == nil,
               let outline, !DocumentSelection(path: outline).isEmpty else {
@@ -315,21 +345,34 @@ extension EditorSession {
         }
         let contours = SelectionContours.make(from: outline)
         guard !contours.isEmpty else { return }
-        let kind: NaturalBrushKind = brushSettings.natural == .round ? .hb : brushSettings.natural
-        let diameter = brushSettings.diameter
-        let spacing = explicitSpacing ?? max(4, diameter * 0.7)
+        let options = explicitOptions ?? hatchOptions
+        let chosen = options.brush ?? brushSettings.natural
+        let kind: NaturalBrushKind = chosen == .round ? .hb : chosen
+        let baseDiameter = options.diameter ?? brushSettings.diameter
+        let spacing = explicitSpacing ?? options.spacing ?? max(4, baseDiameter * 0.7)
         let seed = explicitSeed ?? brushSettings.naturalSeed ?? UInt64.random(in: 1...UInt64(UInt32.max))
-        let lines = NaturalHatch.lines(contours: contours, angle: angle, spacing: spacing, seed: seed, jitter: 0.12)
+        let hatchAngle = explicitOptions == nil && angle == 45 ? options.angle : angle
+        var lines = NaturalHatch.lines(contours: contours, angle: hatchAngle, spacing: spacing, seed: seed, jitter: options.rand, continuous: options.continuous, gradient: options.gradient)
+        if let field = flowField {
+            lines = field.steer(lines, step: max(2, spacing * 0.45))
+        }
         guard !lines.isEmpty, let preset = kind.preset else { return }
         let gain = NaturalBrushEngine.strokeGain(kind: kind, seed: seed)
-        let heavy = max(preset.pressureMin, preset.pressureMax)
-        let light = min(preset.pressureMin, preset.pressureMax)
         var dabs: [NaturalDab] = []
+        let styleJitter = options.brush != nil || options.diameter != nil
         for (index, line) in lines.enumerated() {
             let lineSeed = seed &+ UInt64(index) &* 0x9E3779B97F4A7C15
-            let walked = NaturalBrushEngine.walk(segments: [(line.start, line.end)], pressureStart: heavy, pressureEnd: light, cursor: .start, kind: kind, diameter: diameter, seed: lineSeed, gain: gain, wiggle: min(2, max(0, brushSettings.wiggle)), ending: true)
+            var diameter = baseDiameter
+            if styleJitter {
+                var jitter = NaturalRNG(seed: lineSeed == 0 ? 1 : lineSeed)
+                diameter *= CGFloat(jitter.uniform(0.9, 1.1))
+            }
+            let length = hypot(line.end.x - line.start.x, line.end.y - line.start.y)
+            let curve = NaturalBrushMath.curve(preset: preset, seed: lineSeed)
+            let cap = NaturalBrushMath.envelope(plotted: length, length: max(length, 0.001), preset: preset, curve: curve)
+            let walked = NaturalBrushEngine.walk(segments: [(line.start, line.end)], pressureStart: 1, pressureEnd: 1, cursor: .start, kind: kind, diameter: diameter, seed: lineSeed, gain: gain, wiggle: min(2, max(0, brushSettings.wiggle)), ending: true, span: max(length, 0.001))
             dabs.append(contentsOf: walked.dabs)
-            dabs.append(contentsOf: NaturalBrushEngine.endCaps(at: line.end, pressure: light, kind: kind, diameter: diameter, seed: lineSeed, gain: gain))
+            dabs.append(contentsOf: NaturalBrushEngine.endCaps(at: line.end, pressure: cap, kind: kind, diameter: diameter, seed: lineSeed, gain: gain))
             if dabs.count > 12_000 { break }
         }
         guard !dabs.isEmpty else { return }
@@ -339,6 +382,9 @@ extension EditorSession {
         do {
             var settings = brushSettings
             settings.natural = .round
+            if let red = options.red { settings.red = red }
+            if let green = options.green { settings.green = green }
+            if let blue = options.blue { settings.blue = blue }
             let stroke = try makeRasterEdit(for: layer, settings: settings, growsMask: true)
             if override != nil { stroke.selectionClip = try DocumentSelection(path: outline).clip(canvas: document.size) }
             stroke.editName = "\(kind.rawValue) Hatch"

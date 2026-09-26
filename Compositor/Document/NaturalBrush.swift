@@ -45,8 +45,15 @@ struct NaturalBrushPreset: Sendable, Equatable {
     /// p5's 0–255-style opacity (a marker's `1` is not 100%).
     var opacity: CGFloat
     var spacing: CGFloat
+    /// p5 `min_max[0]`: the pressure at both ends of a gaussian stroke, before tablet pressure.
     var pressureMin: CGFloat
+    /// p5 `min_max[1]`: the pressure on the broad plateau. Not sorted against `pressureMin`.
     var pressureMax: CGFloat
+    /// Gaussian curve pair from the preset. Ignored when `linearPressure` is set.
+    var curve0: CGFloat = 0.15
+    var curve1: CGFloat = 0.2
+    /// Crayon: a linear start-to-end ramp (`normalizePressure` of `[pressureMin, pressureMax]`).
+    var linearPressure: Bool = false
     var tip: NaturalTip
     /// Stroke-wide alpha wobble. p5 defaults this to 0.3 when a preset omits it.
     var noise: CGFloat
@@ -70,17 +77,17 @@ enum NaturalBrushKind: String, CaseIterable, Sendable, Hashable {
     var preset: NaturalBrushPreset? {
         switch self {
         case .round: return nil
-        case .pen: return NaturalBrushPreset(weight: 0.3, scatter: 0.15, sharpness: 0.9, grain: 0.7, opacity: 150, spacing: 0.1, pressureMin: 1.2, pressureMax: 1, tip: .standard, noise: 0.3)
-        case .rotring: return NaturalBrushPreset(weight: 0.15, scatter: 0.05, sharpness: 0.7, grain: 0.9, opacity: 210, spacing: 0.1, pressureMin: 1.3, pressureMax: 1, tip: .standard, noise: 0.3)
-        case .pencil2B: return NaturalBrushPreset(weight: 0.3, scatter: 0.75, sharpness: 0.45, grain: 0.8, opacity: 180, spacing: 0.1, pressureMin: 1.1, pressureMax: 0.9, tip: .standard, noise: 0.3)
-        case .hb: return NaturalBrushPreset(weight: 0.3, scatter: 0.6, sharpness: 0.3, grain: 0.7, opacity: 170, spacing: 0.1, pressureMin: 1.1, pressureMax: 0.9, tip: .standard, noise: 0.3)
-        case .pencil2H: return NaturalBrushPreset(weight: 0.2, scatter: 0.6, sharpness: 0.3, grain: 0.75, opacity: 120, spacing: 0.1, pressureMin: 1.1, pressureMax: 0.9, tip: .standard, noise: 0.3)
-        case .coloredPencil: return NaturalBrushPreset(weight: 0.35, scatter: 0.55, sharpness: 0.8, grain: 0.7, opacity: 75, spacing: 0.1, pressureMin: 0.95, pressureMax: 1.1, tip: .standard, noise: 0.3)
-        case .pastel: return NaturalBrushPreset(weight: 0.7, scatter: 5, sharpness: 0.91, grain: 1, opacity: 30, spacing: 0.085 / 3, pressureMin: 1.09, pressureMax: 0.93, tip: .standard, noise: 1)
-        case .crayon: return NaturalBrushPreset(weight: 0.33, scatter: 1.9, sharpness: 0.75, grain: 2, opacity: 159, spacing: 0.07, pressureMin: 1.1, pressureMax: 0.9, tip: .standard, noise: 1)
-        case .charcoal: return NaturalBrushPreset(weight: 0.35, scatter: 1.5, sharpness: 0.68, grain: 2, opacity: 120, spacing: 0.03, pressureMin: 1.1, pressureMax: 0.95, tip: .standard, noise: 0.3)
-        case .spray: return NaturalBrushPreset(weight: 0.2, scatter: 6, sharpness: 15, grain: 40, opacity: 90, spacing: 0.5, pressureMin: 0.7, pressureMax: 1, tip: .spray, noise: 0.3)
-        case .marker: return NaturalBrushPreset(weight: 2, scatter: 0.2, sharpness: 0, grain: 1, opacity: 1, spacing: 0.03, pressureMin: 1.2, pressureMax: 0.85, tip: .marker, noise: 0.3)
+        case .pen: return NaturalBrushPreset(weight: 0.3, scatter: 0.15, sharpness: 0.9, grain: 0.7, opacity: 150, spacing: 0.1, pressureMin: 1.2, pressureMax: 1, curve0: 0.15, curve1: 0.2, tip: .standard, noise: 0.3)
+        case .rotring: return NaturalBrushPreset(weight: 0.15, scatter: 0.05, sharpness: 0.7, grain: 0.9, opacity: 210, spacing: 0.1, pressureMin: 1.3, pressureMax: 1, curve0: 0.35, curve1: 0.2, tip: .standard, noise: 0.3)
+        case .pencil2B: return NaturalBrushPreset(weight: 0.3, scatter: 0.75, sharpness: 0.45, grain: 0.8, opacity: 180, spacing: 0.1, pressureMin: 1.1, pressureMax: 0.9, curve0: 0.1, curve1: 0.3, tip: .standard, noise: 0.3)
+        case .hb: return NaturalBrushPreset(weight: 0.3, scatter: 0.6, sharpness: 0.3, grain: 0.7, opacity: 170, spacing: 0.1, pressureMin: 1.1, pressureMax: 0.9, curve0: 0.15, curve1: 0.2, tip: .standard, noise: 0.3)
+        case .pencil2H: return NaturalBrushPreset(weight: 0.2, scatter: 0.6, sharpness: 0.3, grain: 0.75, opacity: 120, spacing: 0.1, pressureMin: 1.1, pressureMax: 0.9, curve0: 0.15, curve1: 0.2, tip: .standard, noise: 0.3)
+        case .coloredPencil: return NaturalBrushPreset(weight: 0.35, scatter: 0.55, sharpness: 0.8, grain: 0.7, opacity: 75, spacing: 0.1, pressureMin: 0.95, pressureMax: 1.1, curve0: 0.15, curve1: 0.2, tip: .standard, noise: 0.3)
+        case .pastel: return NaturalBrushPreset(weight: 0.7, scatter: 5, sharpness: 0.91, grain: 1, opacity: 30, spacing: 0.085 / 3, pressureMin: 1.09, pressureMax: 0.93, curve0: 0.4, curve1: 0.05, tip: .standard, noise: 1)
+        case .crayon: return NaturalBrushPreset(weight: 0.33, scatter: 1.9, sharpness: 0.75, grain: 2, opacity: 159, spacing: 0.07, pressureMin: 1.1, pressureMax: 0.9, curve0: 1.1, curve1: 0.9, linearPressure: true, tip: .standard, noise: 1)
+        case .charcoal: return NaturalBrushPreset(weight: 0.35, scatter: 1.5, sharpness: 0.68, grain: 2, opacity: 120, spacing: 0.03, pressureMin: 1.1, pressureMax: 0.95, curve0: 0.15, curve1: 0.4, tip: .standard, noise: 0.3)
+        case .spray: return NaturalBrushPreset(weight: 0.2, scatter: 6, sharpness: 15, grain: 40, opacity: 90, spacing: 0.5, pressureMin: 0.7, pressureMax: 1, curve0: 0.2, curve1: 0.35, tip: .spray, noise: 0.3)
+        case .marker: return NaturalBrushPreset(weight: 2, scatter: 0.2, sharpness: 0, grain: 1, opacity: 1, spacing: 0.03, pressureMin: 1.2, pressureMax: 0.85, curve0: 0.35, curve1: 0.25, tip: .marker, noise: 0.3)
         }
     }
 }
@@ -127,10 +134,20 @@ struct NaturalStepRNG: Sendable {
     mutating func gaussian(mean: Double = 0, deviation: Double = 1) -> Double { rng.gaussian(mean: mean, deviation: deviation) }
 }
 
+/// Randoms p5.brush draws once per stroke in `saveState` (`current.a`, `current.b`, `current.cp`).
+/// Channel 17, step 0, so a tail redraw matches the stroke it belongs to.
+struct NaturalPressureCurve: Equatable, Sendable {
+    var a: CGFloat
+    var b: CGFloat
+    var exponent: CGFloat
+    var warp: CGFloat
+    var scale: CGFloat
+    var tilt: CGFloat
+}
+
 enum NaturalBrushMath {
     /// 0 is a light touch, 1 is a firm one. A mouse has no pressure, so speed stands in:
-    /// a slow hand reads as firm, a fast flick as light. p5's simulated curve needs the
-    /// finished length of the stroke, which a live drag does not know yet.
+    /// a slow hand reads as firm, a fast flick as light.
     static func unitPressure(hardware: CGFloat?, from previous: CGPoint?, to point: CGPoint, diameter: CGFloat) -> CGFloat {
         if let hardware { return min(1, max(0, hardware)) }
         guard let previous else { return 0.82 }
@@ -138,12 +155,76 @@ enum NaturalBrushMath {
         let fast = max(6, diameter * 0.65)
         return 1 - min(1, speed / fast)
     }
-    /// Maps a unit pressure into the preset's min/max. The heavier end is the larger number,
-    /// which is where p5's envelope spends its dark part (often above 1, so the tip grows).
-    static func presetPressure(unit: CGFloat, preset: NaturalBrushPreset) -> CGFloat {
-        let low = min(preset.pressureMin, preset.pressureMax)
-        let high = max(preset.pressureMin, preset.pressureMax)
-        return low + min(1, max(0, unit)) * (high - low)
+
+    static func curve(preset: NaturalBrushPreset, seed: UInt64) -> NaturalPressureCurve {
+        var rng = NaturalStepRNG(seed: seed, step: 0, channel: 17)
+        if preset.linearPressure {
+            // 8 percent variation: offset 0.08, scale 0.08, warp 0.06, tilt 0.06.
+            return NaturalPressureCurve(a: 0, b: 0, exponent: CGFloat(rng.uniform(-0.08, 0.08)),
+                                         warp: CGFloat(rng.uniform(-0.06, 0.06)), scale: CGFloat(rng.uniform(0.92, 1.08)),
+                                         tilt: CGFloat(rng.uniform(-0.06, 0.06)))
+        }
+        return NaturalPressureCurve(a: CGFloat(rng.uniform(-1, 1)), b: CGFloat(rng.uniform(1, 1.5)),
+                                     exponent: CGFloat(rng.uniform(3, 3.5)), warp: 0, scale: 1, tilt: 0)
+    }
+
+    /// p5 `gauss` / `simPressure`. `pressureMin` is the value near the ends, `pressureMax` the plateau.
+    /// A known `length` is the whole stroke. Crayon ramps from `pressureMin` at the start to `pressureMax` at the end.
+    static func envelope(plotted: CGFloat, length: CGFloat, preset: NaturalBrushPreset, curve: NaturalPressureCurve) -> CGFloat {
+        let length = max(length, 1e-4)
+        let t = min(1, max(0, plotted / length))
+        if preset.linearPressure { return linearEnvelope(t: t, preset: preset, curve: curve) }
+        let a = 0.5 + preset.curve0 * curve.a
+        let b = 1 - preset.curve1 * curve.b
+        let peak = a * length
+        let half = (plotted < peak ? b * 1.2 : b * 0.8) * (length / 2)
+        let width = abs(half) < 1e-6 ? 1e-6 : half
+        let ratio = abs((plotted - peak) / width)
+        let value = 1 / (1 + pow(ratio, 2 * curve.exponent))
+        return preset.pressureMin + (preset.pressureMax - preset.pressureMin) * value
+    }
+
+    /// Live drag: taper toward `pressureMin` at both ends, sit on `pressureMax` in the body, then times the unit pressure.
+    static func liveTaper(traveled: CGFloat, remain: CGFloat, taperLength: CGFloat, preset: NaturalBrushPreset, ending: Bool) -> CGFloat {
+        let ends = preset.pressureMin
+        let body = preset.pressureMax
+        let span = max(taperLength, 0.001)
+        let enter = min(1, max(0, traveled) / span)
+        var pressure = ends + (body - ends) * enter
+        if ending {
+            let leave = min(1, max(0, remain) / span)
+            pressure = ends + (pressure - ends) * leave
+        }
+        return pressure
+    }
+
+    /// Envelope (known span) or live taper, times a 0…1 touch. Unit 0 lays down nothing.
+    static func pressure(unit: CGFloat, plotted: CGFloat, span: CGFloat?, remain: CGFloat, taperLength: CGFloat, preset: NaturalBrushPreset, seed: UInt64, ending: Bool) -> CGFloat {
+        let touch = min(1, max(0, unit))
+        let shape: CGFloat
+        if let span, span > 1e-3 {
+            shape = envelope(plotted: plotted, length: span, preset: preset, curve: curve(preset: preset, seed: seed))
+        } else {
+            shape = liveTaper(traveled: plotted, remain: remain, taperLength: taperLength, preset: preset, ending: ending)
+        }
+        return shape * touch
+    }
+
+    private static func linearEnvelope(t: CGFloat, preset: NaturalBrushPreset, curve: NaturalPressureCurve) -> CGFloat {
+        let start = preset.pressureMin
+        let end = preset.pressureMax
+        let mid = (start + end) / 2
+        let low = min(start, mid, end)
+        let high = max(start, mid, end)
+        let range = high - low
+        let ns = range > 1e-6 ? (start - low) / range : 0
+        let nm = range > 1e-6 ? (mid - low) / range : 0.5
+        let ne = range > 1e-6 ? (end - low) / range : 1
+        let warped = min(1, max(0, 0.5 + (t - 0.5 + curve.warp) * curve.scale))
+        let shaped = warped < 0.5 ? ns + (nm - ns) * warped * 2 : nm + (ne - nm) * (warped - 0.5) * 2
+        let raw = shaped + curve.exponent + curve.tilt * (t - 0.5)
+        let mapped = low + (high - low) * raw
+        return min(high, max(low, mapped))
     }
 }
 
@@ -157,20 +238,26 @@ enum NaturalBrushEngine {
         return max(0, 1 + CGFloat(rng.gaussian(deviation: Double(strength))))
     }
 
-    static func walk(segments: [(CGPoint, CGPoint)], pressureStart: CGFloat, pressureEnd: CGFloat, cursor: NaturalCursor, kind: NaturalBrushKind, diameter: CGFloat, seed: UInt64, gain: CGFloat, wiggle: CGFloat, ending: Bool) -> (dabs: [NaturalDab], cursor: NaturalCursor) {
+    /// `pressureStart` and `pressureEnd` are unit touches (0 light, 1 firm), not preset min/max.
+    /// `span` is the whole stroke when its length is known (a script, a hatch line). Nil is a live drag:
+    /// the tip tapers toward `pressureMin` at both ends and sits on `pressureMax` in between.
+    static func walk(segments: [(CGPoint, CGPoint)], pressureStart: CGFloat, pressureEnd: CGFloat, cursor: NaturalCursor, kind: NaturalBrushKind, diameter: CGFloat, seed: UInt64, gain: CGFloat, wiggle: CGFloat, ending: Bool, span: CGFloat? = nil) -> (dabs: [NaturalDab], cursor: NaturalCursor) {
         guard let preset = kind.preset, diameter > 0 else { return ([], cursor) }
         guard !segments.isEmpty else { return ([], cursor) }
         let spacing = spacing(preset, diameter: diameter)
         let taperLength = max(6, diameter * 0.4)
-        let low = min(preset.pressureMin, preset.pressureMax)
         var cursor = cursor
         var dabs: [NaturalDab] = []
+        func touch(at traveled: CGFloat, unit: CGFloat, remain: CGFloat, ending: Bool) -> CGFloat {
+            NaturalBrushMath.pressure(unit: unit, plotted: traveled, span: span, remain: remain, taperLength: taperLength, preset: preset, seed: seed, ending: ending)
+        }
         if cursor.anchor == nil, let start = segments.first?.0 {
+            let startPressure = touch(at: 0, unit: pressureStart, remain: taperLength, ending: false)
             if preset.tip == .marker {
-                dabs += caps(at: start, pressure: pressureStart, preset: preset, diameter: diameter, seed: seed, gain: gain, channel: 2)
+                dabs += caps(at: start, pressure: startPressure, preset: preset, diameter: diameter, seed: seed, gain: gain, channel: 2)
             }
             // A click has to leave a mark even when grain would have skipped that one step.
-            dabs += dab(at: start, pressure: shaped(pressureStart, traveled: 0, taperLength: taperLength, low: low, ending: false, remain: taperLength), step: cursor.step, traveled: 0, direction: CGPoint(x: 1, y: 0), preset: preset, diameter: diameter, seed: seed, gain: gain, wiggle: wiggle, force: true)
+            dabs += dab(at: start, pressure: startPressure, step: cursor.step, traveled: 0, direction: CGPoint(x: 1, y: 0), preset: preset, diameter: diameter, seed: seed, gain: gain, wiggle: wiggle, force: true)
             cursor.anchor = start
             cursor.leftover = spacing
             cursor.step += 1
@@ -189,12 +276,12 @@ enum NaturalBrushEngine {
             var distance = leftover
             while distance <= length && dabs.count < 8000 {
                 let along = covered + distance
-                let span = total > 1e-4 ? along / total : 0
-                let target = pressureStart + (pressureEnd - pressureStart) * min(1, max(0, span))
+                let batch = total > 1e-4 ? along / total : 0
+                let unit = pressureStart + (pressureEnd - pressureStart) * min(1, max(0, batch))
                 let remain = max(0, total - along)
                 let at = CGPoint(x: segment.0.x + delta.x * distance / length, y: segment.0.y + delta.y * distance / length)
                 let here = traveled + distance
-                dabs += dab(at: at, pressure: shaped(target, traveled: here, taperLength: taperLength, low: low, ending: ending, remain: remain), step: step, traveled: here, direction: direction, preset: preset, diameter: diameter, seed: seed, gain: gain, wiggle: wiggle)
+                dabs += dab(at: at, pressure: touch(at: here, unit: unit, remain: remain, ending: ending), step: step, traveled: here, direction: direction, preset: preset, diameter: diameter, seed: seed, gain: gain, wiggle: wiggle)
                 step += 1
                 distance += spacing
             }
@@ -227,17 +314,6 @@ enum NaturalBrushEngine {
         case .standard, .marker:
             return min(max(0.35, diameter * 0.9), max(0.35, preset.spacing * diameter))
         }
-    }
-
-    /// Light at the first pixels, and — only once the pen lifts — light again at the end.
-    private static func shaped(_ target: CGFloat, traveled: CGFloat, taperLength: CGFloat, low: CGFloat, ending: Bool, remain: CGFloat) -> CGFloat {
-        let enter = min(1, traveled / taperLength)
-        var pressure = low + (target - low) * enter
-        if ending {
-            let leave = min(1, remain / taperLength)
-            pressure = low + (pressure - low) * leave
-        }
-        return pressure
     }
 
     private static func caps(at point: CGPoint, pressure: CGFloat, preset: NaturalBrushPreset, diameter: CGFloat, seed: UInt64, gain: CGFloat, channel: Int) -> [NaturalDab] {
@@ -414,12 +490,29 @@ enum NaturalCoverage {
 struct HatchLine: Equatable, Sendable {
     var start: CGPoint
     var end: CGPoint
+    /// Joins the previous line to this one when hatch is continuous.
+    var connector: Bool = false
+}
+
+/// Remembered settings for Edit > Hatch Selection, and the extra fields on a hatch op.
+struct HatchOptions: Equatable, Sendable {
+    var angle: CGFloat = 45
+    var spacing: CGFloat? = nil
+    var rand: CGFloat = 0
+    var continuous: Bool = false
+    var gradient: CGFloat = 0
+    /// Nil keeps the brush already chosen. A preset is hatch-only and jitters size by 10 percent per line.
+    var brush: NaturalBrushKind? = nil
+    var diameter: CGFloat? = nil
+    var red: CGFloat? = nil
+    var green: CGFloat? = nil
+    var blue: CGFloat? = nil
 }
 
 /// Classic scanline hatch from p5.brush `src/hatch/hatch.js`: rotate the contour, cut it with
 /// horizontal lines, rotate the chords back. Crossings pair up, so a hole stays open.
 enum NaturalHatch {
-    static func lines(contours: [[CGPoint]], angle: CGFloat, spacing: CGFloat, seed: UInt64, jitter: CGFloat) -> [HatchLine] {
+    static func lines(contours: [[CGPoint]], angle: CGFloat, spacing: CGFloat, seed: UInt64, jitter: CGFloat = 0, continuous: Bool = false, gradient: CGFloat = 0) -> [HatchLine] {
         let gap = max(1, spacing)
         let rad = angle * CGFloat.pi / 180
         let cosA = cos(rad), sinA = sin(rad)
@@ -445,7 +538,10 @@ enum NaturalHatch {
         guard !edges.isEmpty, maxY > minY else { return [] }
         var lines: [HatchLine] = []
         var y = minY + gap * 0.5
+        var step = gap
+        let growth = gradient > 0 ? min(1.1, max(1, 1 + min(1, gradient) * 0.1)) : 1
         var rng = NaturalRNG(seed: seed == 0 ? 1 : seed)
+        var scan = 0
         while y < maxY && lines.count < 4000 {
             var crossings: [CGFloat] = []
             for edge in edges where (edge.y1 <= y) != (edge.y2 <= y) {
@@ -464,11 +560,20 @@ enum NaturalHatch {
                     y2 += CGFloat(rng.uniform(Double(-reach), Double(reach)))
                 }
                 let start = CGPoint(x: x1 * cosA + y1 * sinA, y: -x1 * sinA + y1 * cosA)
-                let end = CGPoint(x: x2 * cosA + y2 * sinA, y: -x2 * sinA + y2 * cosA)
-                if hypot(end.x - start.x, end.y - start.y) >= 0.5 { lines.append(HatchLine(start: start, end: end)) }
+                var end = CGPoint(x: x2 * cosA + y2 * sinA, y: -x2 * sinA + y2 * cosA)
+                var lineStart = start
+                if continuous, scan % 2 == 1 { swap(&lineStart, &end) }
+                if hypot(end.x - lineStart.x, end.y - lineStart.y) >= 0.5 {
+                    if continuous, let previous = lines.last {
+                        lines.append(HatchLine(start: previous.end, end: lineStart, connector: true))
+                    }
+                    lines.append(HatchLine(start: lineStart, end: end))
+                }
                 index += 2
             }
-            y += gap
+            y += step
+            step *= growth
+            scan += 1
         }
         return lines
     }

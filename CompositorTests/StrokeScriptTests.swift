@@ -26,6 +26,19 @@ struct StrokeScriptTests {
         guard case .hatch(let lines) = hatch else { Issue.record("expected a hatch"); return }
         #expect(lines.angle == 30 && lines.spacing == 6 && lines.red == nil)
         #expect(StrokeScriptReader.parse("{\"op\":\"nope\"}") == nil)
+        let field = try #require(StrokeScriptReader.parse("{\"op\":\"field\",\"name\":\"waves\",\"wiggle\":1.5,\"seed\":3}"))
+        guard case .field(let waves) = field else { Issue.record("expected a field"); return }
+        #expect(waves.name == "waves" && waves.wiggle == 1.5 && waves.seed == 3)
+        #expect(StrokeScriptReader.parse("{\"op\":\"field\",\"name\":\"none\"}") != nil)
+        let spline = try #require(StrokeScriptReader.parse("{\"op\":\"spline\",\"layer\":\"Petals\",\"curvature\":0,\"points\":[[0,0],[12,4,0.5]],\"outline\":true}"))
+        guard case .figure(let shape) = spline else { Issue.record("expected a spline"); return }
+        #expect(shape.outline && shape.fill == nil)
+        guard case .spline(let samples, let curvature) = shape.geometry else { Issue.record("expected spline geometry"); return }
+        #expect(curvature == 0 && samples.count == 2 && samples[1].pressure == 0.5)
+        let wash = try #require(StrokeScriptReader.parse("{\"op\":\"watercolor\",\"layer\":\"Petals\",\"polygon\":[[0,0],[8,0],[4,6]],\"color\":[0.2,0.3,0.4],\"bleed\":0.2,\"direction\":\"in\",\"clip\":true,\"scatter\":false,\"opacity\":180}"))
+        guard case .watercolor(let fill) = wash else { Issue.record("expected a watercolor"); return }
+        #expect(fill.options.bleed == 0.2 && fill.options.outward == false && fill.options.clip && fill.options.scatter == false)
+        #expect(fill.options.opacity == 180)
         #expect(StrokeScriptReader.kind(named: "2B") == .pencil2B)
         #expect(StrokeScriptReader.kind(named: "Charcoal") == .charcoal)
     }

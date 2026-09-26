@@ -39,6 +39,12 @@ extension EditorSession {
             await playStrokeHatch(hatch)
         case .clear(let layer):
             clearStrokeScriptLayer(layer)
+        case .field(let field):
+            applyFlowField(name: field.name, wiggle: field.wiggle, seed: field.seed, columns: field.columns, rows: field.rows, angles: field.angles)
+        case .flowLine(let line):
+            if await playFlowLine(line, instant: instant) == false { return false }
+        case .figure(let shape):
+            if await playFigure(shape, instant: instant) == false { return false }
         }
         return true
     }
@@ -127,7 +133,7 @@ extension EditorSession {
     /// True when the line should be consumed. False when playback was cancelled before the first dab,
     /// so the same line can start again later. A stroke that already started is finished here.
     @MainActor
-    private func playStrokeDraw(_ draw: StrokeDraw, instant: Bool) async -> Bool {
+    private func playStrokeDraw(_ draw: StrokeDraw, instant: Bool, steer: Bool = true) async -> Bool {
         if let layer = draw.layer, !aimStrokeScript(at: layer) { return true }
         guard activeLayer != nil else { brushError = "Stroke script has no layer to paint."; return true }
         let brush = strokeScriptBrush ?? StrokeScriptBrush(settings: brushSettings, erase: brushMode == .erase)
@@ -141,10 +147,13 @@ extension EditorSession {
             isScriptedBrushStroke = false
             brushSettings.smoothing = savedSmoothing
             brushSettings.naturalSeed = nil
+            brushSettings.naturalSpan = nil
         }
-        let times = StrokeTiming.times(draw.points, pace: instant ? .fast : draw.pace)
+        let samples = (steer ? flowField?.steer(draw.points, step: max(1.5, brushSettings.diameter * 0.15)) : nil) ?? draw.points
+        brushSettings.naturalSpan = StrokeTiming.length(samples)
+        let times = StrokeTiming.times(samples, pace: instant ? .fast : draw.pace)
         var elapsed: CGFloat = 0
-        for (sample, due) in zip(draw.points, times) {
+        for (sample, due) in zip(samples, times) {
             if Task.isCancelled { return started }
             if !instant {
                 let wait = due - elapsed
@@ -174,7 +183,7 @@ extension EditorSession {
     @MainActor
     private func playStrokeFill(_ fill: StrokeFill) async {
         guard aimStrokeScript(at: fill.layer), let path = StrokeScriptReader.polygonPath(fill.polygon) else { return }
-        await watercolorFillSelection(path: path, red: fill.red, green: fill.green, blue: fill.blue, seed: fill.seed)
+        await watercolorFillSelection(path: path, red: fill.red, green: fill.green, blue: fill.blue, seed: fill.seed, options: fill.options)
     }
 
     @MainActor
@@ -186,7 +195,46 @@ extension EditorSession {
             brush.green = green
             brush.blue = blue
         }
+        if let preset = hatch.brush { brush.preset = preset }
+        if let diameter = hatch.diameter { brush.diameter = diameter }
         applyStrokeScriptBrush(brush, seed: hatch.seed)
-        await hatchSelection(path: path, angle: hatch.angle, spacing: hatch.spacing, seed: hatch.seed)
+        let options = HatchOptions(angle: hatch.angle, spacing: hatch.spacing, rand: hatch.rand, continuous: hatch.continuous, gradient: hatch.gradient, brush: hatch.brush, diameter: hatch.diameter, red: hatch.red, green: hatch.green, blue: hatch.blue)
+        await hatchSelection(path: path, angle: hatch.angle, spacing: hatch.spacing, seed: hatch.seed, options: options)
+    }
+
+    @MainActor
+    private func playFlowLine(_ line: StrokeFlowLine, instant: Bool) async -> Bool {
+        let samples: [StrokeSample]
+        if let flowField {
+            samples = flowField.flowLine(x: line.x, y: line.y, length: line.length, direction: line.direction, pressure: line.pressure)
+        } else {
+            let heading = line.direction * CGFloat.pi / 180
+            samples = [
+                StrokeSample(x: line.x, y: line.y, pressure: line.pressure, time: nil),
+                StrokeSample(x: line.x + cos(heading) * line.length, y: line.y + sin(heading) * line.length, pressure: line.pressure, time: nil)
+            ]
+        }
+        guard samples.count >= 2 else { return true }
+        return await playStrokeDraw(StrokeDraw(layer: line.layer, seed: line.seed, pace: line.pace, points: samples), instant: instant, steer: false)
+    }
+
+    @MainActor
+    private func playFigure(_ shape: StrokeShape, instant: Bool) async -> Bool {
+        let built = ShapeGeometry.build(shape.geometry, field: flowField, seed: shape.seed ?? 1)
+        if shape.outline, built.samples.count >= 2 {
+            let draw = StrokeDraw(layer: shape.layer, seed: shape.seed, pace: shape.pace, points: built.samples)
+            if await playStrokeDraw(draw, instant: instant, steer: false) == false { return false }
+        }
+        if var fill = shape.fill, built.polygon.count >= 3 {
+            if fill.layer.isEmpty, let layer = shape.layer { fill.layer = layer }
+            fill.polygon = built.polygon
+            if !fill.layer.isEmpty { await playStrokeFill(fill) }
+        }
+        if var hatch = shape.hatch, built.polygon.count >= 3 {
+            if hatch.layer.isEmpty, let layer = shape.layer { hatch.layer = layer }
+            hatch.polygon = built.polygon
+            if !hatch.layer.isEmpty { await playStrokeHatch(hatch) }
+        }
+        return true
     }
 }

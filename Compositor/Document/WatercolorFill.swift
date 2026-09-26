@@ -7,12 +7,42 @@ import AppKit
 // circles lift pigment the way the original erase step does. Layers composite with
 // ordinary source-over so a transparent layer stays transparent — no spectral mixing.
 
+/// Remembered settings for Edit > Watercolor Fill Selection, and the extra fields on a watercolor op.
+struct WatercolorOptions: Equatable, Sendable {
+    var bleed: CGFloat = 0.07
+    var texture: CGFloat = 0.8
+    var border: CGFloat = 0.5
+    /// 0…255, matching p5.brush. 150 is the library default.
+    var opacity: CGFloat = 150
+    /// False bleeds inward.
+    var outward: Bool = true
+    /// Nil picks a random vertex to start the wash. A number is degrees.
+    var angle: CGFloat? = nil
+    var scatter: Bool = true
+    /// When set, the wash is clipped to the polygon. Off lets the bleed leave the selection.
+    var clip: Bool = false
+
+    func clamped() -> WatercolorOptions {
+        var copy = self
+        copy.bleed = min(1, max(0, bleed.isFinite ? bleed : 0))
+        copy.texture = min(1, max(0, texture.isFinite ? texture : 0))
+        copy.border = min(1, max(0, border.isFinite ? border : 0))
+        copy.opacity = min(255, max(0, opacity.isFinite ? opacity : 0))
+        return copy
+    }
+}
+
 struct WatercolorPass: Sendable {
     var polygons: [[CGPoint]]
     var fillAlpha: CGFloat
     var strokeAlpha: CGFloat
     var lineWidth: CGFloat
     var erases: [(center: CGPoint, radius: CGFloat, alpha: CGFloat)]
+    /// The extra dark layer (`grow` of a random 0.15…0.7, painted at twice the intensity).
+    var darker: [[CGPoint]] = []
+    var darkerAlpha: CGFloat = 0
+    var scatterPolygons: [[CGPoint]] = []
+    var scatterAlpha: CGFloat = 0
 }
 
 enum SelectionContours {
@@ -102,58 +132,101 @@ enum SelectionContours {
 
 enum WatercolorFill {
     private struct Poly {
-        var vertices: [CGPoint]
-        var modifiers: [CGFloat]
-        var outward: [Bool]
+        var v: [CGPoint]
+        var m: [CGFloat]
+        var dir: [Bool]
         var center: CGPoint
-        var size: CGFloat
+        var sizeX: CGFloat
+        var sizeY: CGFloat
     }
 
-    /// Ten washes rather than p5's twenty. Each one is a frame the canvas can show before the next.
-    static func passes(contours: [[CGPoint]], seed: UInt64, bleed: CGFloat = 0.07, texture: CGFloat = 0.8, border: CGFloat = 0.5) -> [WatercolorPass] {
+    /// Twenty washes, the count p5.brush paints. `bleed`, `texture`, and `border` keep the old argument names.
+    static func passes(contours: [[CGPoint]], seed: UInt64, bleed: CGFloat = 0.07, texture: CGFloat = 0.8, border: CGFloat = 0.5, opacity: CGFloat = 150, outward: Bool = true, angle: CGFloat? = nil, scatter: Bool = true) -> [WatercolorPass] {
+        let options = WatercolorOptions(bleed: bleed, texture: texture, border: border, opacity: opacity, outward: outward, angle: angle, scatter: scatter)
+        return passes(contours: contours, seed: seed, options: options)
+    }
+
+    static func passes(contours: [[CGPoint]], seed: UInt64, options: WatercolorOptions) -> [WatercolorPass] {
+        let options = options.clamped()
         guard let contour = contours.max(by: { abs(area($0)) < abs(area($1)) }), contour.count >= 3 else { return [] }
         var rng = NaturalRNG(seed: seed == 0 ? 1 : seed)
-        var gaussians: [CGFloat] = []
-        gaussians.reserveCapacity(256)
-        for _ in 0..<256 { gaussians.append(CGFloat(rng.gaussian(mean: 0.5, deviation: 0.2))) }
-        let center = centroid(contour)
-        let size = contour.reduce(CGFloat(0)) { max($0, hypot($1.x - center.x, $1.y - center.y)) }
-        guard size > 0.5 else { return [] }
-        let strength = min(1, max(0, bleed))
-        let fluid = contour.count / 4
-        var modifiers: [CGFloat] = []
-        var outward: [Bool] = []
-        for index in contour.indices {
-            let scale: CGFloat = index > fluid ? 1 : 0.3
-            modifiers.append(scale * CGFloat(rng.uniform(0.85, 1.4)) * strength)
-            outward.append(true)
+        var poolA: [CGFloat] = []
+        var poolB: [CGFloat] = []
+        poolA.reserveCapacity(128)
+        poolB.reserveCapacity(128)
+        for _ in 0..<128 {
+            poolA.append(CGFloat(rng.gaussian(mean: 0.5, deviation: 0.2)))
+            poolB.append(CGFloat(rng.gaussian(mean: 0, deviation: 0.02)))
         }
-        var poly = Poly(vertices: contour, modifiers: modifiers, outward: outward, center: jittered(center, size: size, rng: &rng), size: size)
-        poly = grow(poly, factor: 1, rng: &rng, gaussians: gaussians, strength: strength)
-        let layers = 10
+        let strength = options.bleed
+        let wr = rng.uniform(0, 75)
+        let band = wr < 5 ? 1.0 : (wr < 15 ? 2.0 : 3.0)
+        let fluid = Int(Double(contour.count) * 0.25 * band)
+        var modifiers: [CGFloat] = []
+        modifiers.reserveCapacity(contour.count)
+        for index in contour.indices {
+            let scale = index > fluid ? 1.0 : 0.3
+            modifiers.append(CGFloat(scale * rng.uniform(0.85, 1.4) * Double(strength)))
+        }
+        let shift = options.angle.map { startIndex(contour, angle: $0) } ?? Int(rng.uniform(0, Double(contour.count)))
+        let n = contour.count
+        var shifted: [CGPoint] = []
+        shifted.reserveCapacity(n)
+        for index in 0..<n { shifted.append(contour[(index + shift) % n]) }
+        let center = centroid(shifted)
+        let flags = outwardFlags(vertices: shifted, against: contour)
+        var maxX: CGFloat = 0, maxY: CGFloat = 0
+        for point in shifted {
+            maxX = max(maxX, abs(center.x - point.x))
+            maxY = max(maxY, abs(center.y - point.y))
+        }
+        guard max(maxX, maxY) > 0.5 else { return [] }
+        let jittered = CGPoint(x: center.x + CGFloat(rng.uniform(-0.6, 0.6)) * maxX, y: center.y + CGFloat(rng.uniform(-0.6, 0.6)) * maxY)
+        var poly = Poly(v: shifted, m: modifiers, dir: flags, center: jittered, sizeX: maxX, sizeY: maxY)
+        let intensity = min(1, max(0, options.opacity / 255))
+        let ink = 2 * intensity * (1 + options.texture / 2)
+        let textureScale = options.texture * 3
+        let darkerFactor = CGFloat(rng.uniform(0.15, 0.7))
+        poly = grow(poly, factor: 1, rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward)
+        let sparse: Poly? = options.scatter
+            ? flip(scatter(grow(scatter(poly, ratio: 0.1, rng: &rng), factor: 1, rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward), ratio: 0.75, rng: &rng))
+            : nil
+        let layers = 20
         var passes: [WatercolorPass] = []
+        var pols: [Poly] = []
+        let size = max(maxX, maxY)
         for index in 0..<layers {
-            if index % 3 == 0 { poly = grow(poly, factor: 1, rng: &rng, gaussians: gaussians, strength: strength) }
-            let fade = 1 - CGFloat(index) / CGFloat(layers)
-            let main = grow(poly, factor: max(0.25, 1 - 0.04 * CGFloat(index)), rng: &rng, gaussians: gaussians, strength: strength)
-            let mid = grow(poly, factor: max(0.18, 0.62 - 0.03 * CGFloat(index)), rng: &rng, gaussians: gaussians, strength: strength)
-            let inner = grow(poly, factor: max(0.12, 0.34 - 0.02 * CGFloat(index)), rng: &rng, gaussians: gaussians, strength: strength)
-            var polygons = [main.vertices, mid.vertices, inner.vertices]
-            if texture > 0 {
-                polygons.append(scatter(grow(poly, factor: 1, rng: &rng, gaussians: gaussians, strength: strength), ratio: 0.34, rng: &rng).vertices)
+            if index % 4 == 0 { poly = grow(poly, factor: 1, rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward) }
+            if index % 2 == 0 {
+                pols = [
+                    grow(poly, factor: max(0.05, 1 - 0.0125 * CGFloat(index)), rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward),
+                    grow(poly, factor: max(0.05, 0.7 - 0.0125 * CGFloat(index)), rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward),
+                    grow(poly, factor: max(0.05, 0.4 - 0.0125 * CGFloat(index)), rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward)
+                ]
+            }
+            var polygons: [[CGPoint]] = []
+            for item in pols {
+                let grown = grow(grow(item, factor: 999, rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward), factor: 997, rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward)
+                polygons.append(grown.v)
+            }
+            var scatterPolygons: [[CGPoint]] = []
+            if options.scatter, let sparse {
+                let layer = grow(flip(grow(sparse, factor: 999, rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward)), factor: 997, rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward)
+                scatterPolygons = [layer.v]
+            }
+            var darker: [[CGPoint]] = []
+            if index % 2 == 0 {
+                let dark = grow(grow(poly, factor: darkerFactor, rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward), factor: 999, rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward)
+                darker = [dark.v]
             }
             var erases: [(center: CGPoint, radius: CGFloat, alpha: CGFloat)] = []
-            if texture > 0, index % 4 == 3 || index == layers - 1 {
-                let count = Int(rng.uniform(18, 36) * Double(max(0.4, texture)))
-                for _ in 0..<count {
-                    let spreadX = CGFloat(rng.gaussian(deviation: Double(size / 2.2)))
-                    let spreadY = CGFloat(rng.gaussian(deviation: Double(size / 2.2)))
-                    let radius = CGFloat(rng.uniform(Double(size * 0.04), Double(size * 0.28)))
-                    erases.append((CGPoint(x: poly.center.x + spreadX, y: poly.center.y + spreadY), radius, 0.12 + 0.1 * texture))
-                }
+            if options.texture > 0, index % 8 == 0 || index == layers - 1 {
+                erases = erase(poly, texture: options.texture, opacity: options.opacity, rng: &rng)
             }
-            passes.append(WatercolorPass(polygons: polygons, fillAlpha: 0.045 * fade + 0.018, strokeAlpha: 0.03 * border * fade,
-                                         lineWidth: max(0.6, size / 28 * border), erases: erases))
+            let width = map(CGFloat(index), 0, 24, size / 25, size / 30, clamp: true) * options.border
+            passes.append(WatercolorPass(polygons: polygons, fillAlpha: ink / 100, strokeAlpha: options.border * 0.010,
+                                         lineWidth: max(0.4, width), erases: erases, darker: darker, darkerAlpha: ink * 2 / 100,
+                                         scatterPolygons: scatterPolygons, scatterAlpha: ink * textureScale / 100))
         }
         return passes
     }
@@ -163,16 +236,22 @@ enum WatercolorFill {
         context.setLineCap(.round)
         context.setLineJoin(.round)
         context.setLineWidth(pass.lineWidth)
-        for polygon in pass.polygons where polygon.count >= 3 {
-            context.addPath(path(polygon))
-            context.setFillColor(paint(red: red, green: green, blue: blue, alpha: pass.fillAlpha, mask: mask))
-            context.fillPath()
-            if pass.strokeAlpha > 0 {
+        func paint(_ polygons: [[CGPoint]], alpha: CGFloat) {
+            guard alpha > 0 else { return }
+            for polygon in polygons where polygon.count >= 3 {
                 context.addPath(path(polygon))
-                context.setStrokeColor(paint(red: red, green: green, blue: blue, alpha: pass.strokeAlpha, mask: mask))
-                context.strokePath()
+                context.setFillColor(color(red: red, green: green, blue: blue, alpha: alpha, mask: mask))
+                context.fillPath()
+                if pass.strokeAlpha > 0 {
+                    context.addPath(path(polygon))
+                    context.setStrokeColor(color(red: red, green: green, blue: blue, alpha: pass.strokeAlpha, mask: mask))
+                    context.strokePath()
+                }
             }
         }
+        paint(pass.polygons, pass.fillAlpha)
+        paint(pass.darker, pass.darkerAlpha)
+        paint(pass.scatterPolygons, pass.scatterAlpha)
         if !pass.erases.isEmpty {
             context.setBlendMode(.destinationOut)
             for erase in pass.erases {
@@ -183,6 +262,216 @@ enum WatercolorFill {
         context.restoreGState()
     }
 
+    /// How far past the selection the wash should be allowed to paint. Zero when the wash is clipped.
+    static func bleedMargin(bounds: CGRect, options: WatercolorOptions) -> CGFloat {
+        guard !options.clip else { return 0 }
+        let span = max(bounds.width, bounds.height)
+        return max(24, span * (0.35 + options.bleed * 2))
+    }
+
+    private static func erase(_ poly: Poly, texture: CGFloat, opacity: CGFloat, rng: inout NaturalRNG) -> [(center: CGPoint, radius: CGFloat, alpha: CGFloat)] {
+        let spread = map(texture, 0, 1, 2, 3.5, clamp: true)
+        let count = Int(rng.uniform(80, 110) * Double(spread))
+        let minSize = min(poly.sizeX, poly.sizeY) * 1.3
+        let alpha = ((5 - map(opacity, 80, 100, 0.3, 0.7, clamp: true)) * texture * 3) / 255
+        var marks: [(center: CGPoint, radius: CGFloat, alpha: CGFloat)] = []
+        marks.reserveCapacity(count)
+        for index in 0..<count {
+            if index % 5 == 0 {
+                _ = rng.gaussian(deviation: Double(poly.sizeX / 1.3))
+                _ = rng.gaussian(deviation: Double(poly.sizeY / 1.3))
+                _ = rng.uniform(Double(0.03 * minSize), Double(0.45 * minSize))
+                continue
+            }
+            let x = poly.center.x + CGFloat(rng.gaussian(deviation: Double(poly.sizeX / 1.3)))
+            let y = poly.center.y + CGFloat(rng.gaussian(deviation: Double(poly.sizeY / 1.3)))
+            let radius = CGFloat(rng.uniform(Double(0.03 * minSize), Double(0.45 * minSize)))
+            marks.append((CGPoint(x: x, y: y), max(0.5, radius), max(0, alpha)))
+        }
+        return marks
+    }
+
+    private static func grow(_ poly: Poly, factor: CGFloat, rng: inout NaturalRNG, poolA: [CGFloat], poolB: [CGFloat], bleed: CGFloat, outward: Bool) -> Poly {
+        let trimmed = trim(poly, factor: factor, rng: &rng)
+        let len = trimmed.v.count
+        guard len >= 3 else { return trimmed }
+        let bleedDir: CGFloat = outward ? -90 : 90
+        var vertices: [CGPoint] = []
+        var modifiers: [CGFloat] = []
+        var dirs: [Bool] = []
+        vertices.reserveCapacity(min(800, len * 2))
+        for index in 0..<len {
+            let current = trimmed.v[index]
+            let next = trimmed.v[(index + 1) % len]
+            let mine = trimmed.m[index]
+            let flag = trimmed.dir[index]
+            var mod = factor == 999 ? CGFloat(rng.uniform(0.6, 0.8)) : bleed
+            if factor < 997 { mod = mine }
+            vertices.append(current)
+            modifiers.append(mine)
+            dirs.append(flag)
+            let sideX = next.x - current.x, sideY = next.y - current.y
+            if mod < 0.05 {
+                vertices.append(CGPoint(x: current.x + sideX * 0.5, y: current.y + sideY * 0.5))
+                modifiers.append(mine)
+                dirs.append(flag)
+                continue
+            }
+            let rot = (flag ? bleedDir : -bleedDir) + CGFloat(rng.uniform(-1, 1)) * 5
+            let radians = rot * CGFloat.pi / 180
+            let c = cos(radians), s = sin(radians)
+            let dirX = c * sideX + s * sideY
+            let dirY = c * sideY - s * sideX
+            let sample = poolA[Int(rng.uniform(0, 1) * Double(poolA.count)) % poolA.count]
+            let distance = sample * CGFloat(rng.uniform(0.65, 1.35)) * mod
+            let nextMod = mine + poolB[Int(rng.uniform(0, 1) * Double(poolB.count)) % poolB.count]
+            vertices.append(CGPoint(x: current.x + sideX * 0.5 + dirX * distance, y: current.y + sideY * 0.5 + dirY * distance))
+            modifiers.append(nextMod)
+            dirs.append(flag)
+        }
+        return cap(Poly(v: vertices, m: modifiers, dir: dirs, center: trimmed.center, sizeX: trimmed.sizeX, sizeY: trimmed.sizeY), limit: 480)
+    }
+
+    private static func trim(_ poly: Poly, factor: CGFloat, rng: inout NaturalRNG) -> Poly {
+        let count = poly.v.count
+        guard factor < 1, factor >= 0, count > 8 else { return poly }
+        let remove = Int((1 - factor) * CGFloat(count))
+        guard remove >= 2, remove < count - 4 else { return poly }
+        let start = count / 2 - remove / 2
+        let end = start + remove
+        let from = poly.v[(start - 1 + count) % count]
+        let to = poly.v[end % count]
+        let edge = hypot(to.x - from.x, to.y - from.y)
+        let sample = start >= 2 ? Int(rng.uniform(0, Double(start - 1))) : 0
+        let spacing = max(1, hypot(poly.v[(sample + 1) % count].x - poly.v[sample].x, poly.v[(sample + 1) % count].y - poly.v[sample].y))
+        let insert = max(2, Int(ceil(edge / spacing * 0.05)))
+        var vertices: [CGPoint] = []
+        var modifiers: [CGFloat] = []
+        var dirs: [Bool] = []
+        if start > 0 {
+            vertices.append(contentsOf: poly.v[0..<start])
+            modifiers.append(contentsOf: poly.m[0..<start])
+            dirs.append(contentsOf: poly.dir[0..<start])
+        }
+        let jitter = edge * 0.06
+        let flag = poly.dir[start % poly.dir.count]
+        for step in 1...insert {
+            let t = CGFloat(step) / CGFloat(insert + 1)
+            vertices.append(CGPoint(x: from.x + (to.x - from.x) * t + CGFloat(rng.uniform(Double(-jitter), Double(jitter))),
+                                    y: from.y + (to.y - from.y) * t + CGFloat(rng.uniform(Double(-jitter), Double(jitter)))))
+            modifiers.append(CGFloat(rng.uniform(0.3, 0.5)))
+            dirs.append(flag)
+        }
+        if end < count {
+            vertices.append(contentsOf: poly.v[end...])
+            modifiers.append(contentsOf: poly.m[end...])
+            dirs.append(contentsOf: poly.dir[end...])
+        }
+        guard vertices.count >= 3 else { return poly }
+        return Poly(v: vertices, m: modifiers, dir: dirs, center: poly.center, sizeX: poly.sizeX, sizeY: poly.sizeY)
+    }
+
+    private static func scatter(_ poly: Poly, ratio: CGFloat, rng: inout NaturalRNG) -> Poly {
+        let count = poly.v.count
+        let keep = max(3, Int(CGFloat(count) * ratio))
+        guard keep < count else { return poly }
+        let step = CGFloat(count) / CGFloat(keep)
+        var vertices: [CGPoint] = []
+        var modifiers: [CGFloat] = []
+        var dirs: [Bool] = []
+        for index in 0..<keep {
+            let source = Int(CGFloat(index) * step + CGFloat(rng.uniform(0, Double(step * 0.8)))) % count
+            var point = poly.v[source]
+            if !contains(point, polygon: poly.v) {
+                point = CGPoint(x: poly.center.x + (point.x - poly.center.x) * CGFloat(rng.uniform(0.3, 0.6)),
+                                y: poly.center.y + (point.y - poly.center.y) * CGFloat(rng.uniform(0.3, 0.6)))
+            }
+            vertices.append(point)
+            modifiers.append(poly.m[source])
+            dirs.append(!poly.dir[source])
+        }
+        return Poly(v: vertices, m: modifiers, dir: dirs, center: poly.center, sizeX: poly.sizeX, sizeY: poly.sizeY)
+    }
+
+    private static func flip(_ poly: Poly) -> Poly {
+        var copy = poly
+        copy.dir = poly.dir.map { !$0 }
+        return copy
+    }
+
+    private static func cap(_ poly: Poly, limit: Int) -> Poly {
+        guard poly.v.count > limit, limit >= 3 else { return poly }
+        let step = Int((CGFloat(poly.v.count) / CGFloat(limit)).rounded(.up))
+        var vertices: [CGPoint] = []
+        var modifiers: [CGFloat] = []
+        var dirs: [Bool] = []
+        var index = 0
+        while index < poly.v.count {
+            vertices.append(poly.v[index])
+            modifiers.append(poly.m[index])
+            dirs.append(poly.dir[index])
+            index += step
+        }
+        return Poly(v: vertices, m: modifiers, dir: dirs, center: poly.center, sizeX: poly.sizeX, sizeY: poly.sizeY)
+    }
+
+    /// Ray-parity from each edge midpoint, the direction test in fill.js. Even means the bleed rotation is the outward one.
+    private static func outwardFlags(vertices: [CGPoint], against sides: [CGPoint]) -> [Bool] {
+        let sideCount = sides.count
+        return vertices.indices.map { index in
+            let current = vertices[index]
+            let next = vertices[(index + 1) % vertices.count]
+            let sideX = next.x - current.x, sideY = next.y - current.y
+            let midX = current.x + sideX / 2, midY = current.y + sideY / 2
+            let rayX = -sideY, rayY = sideX
+            let opposite = -(sideX * sideX + sideY * sideY)
+            var hits = 0
+            for side in 0..<sideCount {
+                let a = sides[side], b = sides[(side + 1) % sideCount]
+                let sdx = b.x - a.x, sdy = b.y - a.y
+                let denom = sdy * rayX - sdx * rayY
+                if denom == 0 { continue }
+                let ub = (rayX * (midY - a.y) - rayY * (midX - a.x)) / denom
+                if ub < 0 || ub > 1 { continue }
+                let ua = (sdx * (midY - a.y) - sdy * (midX - a.x)) / denom
+                if ua * opposite <= 0.01 { continue }
+                hits += 1
+            }
+            return hits % 2 == 0
+        }
+    }
+
+    private static func startIndex(_ points: [CGPoint], angle: CGFloat) -> Int {
+        let radians = angle * CGFloat.pi / 180
+        let dx = cos(radians), dy = -sin(radians)
+        var best = 0
+        var bestDot = CGFloat.infinity
+        for (index, point) in points.enumerated() {
+            let dot = point.x * dx + point.y * dy
+            if dot < bestDot { bestDot = dot; best = index }
+        }
+        return best
+    }
+
+    private static func contains(_ point: CGPoint, polygon: [CGPoint]) -> Bool {
+        var hits = 0
+        for index in polygon.indices {
+            let a = polygon[index], b = polygon[(index + 1) % polygon.count]
+            if (a.y > point.y) == (b.y > point.y) { continue }
+            let t = (point.y - a.y) / (b.y - a.y)
+            if point.x < a.x + t * (b.x - a.x) { hits += 1 }
+        }
+        return hits % 2 == 1
+    }
+
+    private static func map(_ value: CGFloat, _ a: CGFloat, _ b: CGFloat, _ c: CGFloat, _ d: CGFloat, clamp: Bool) -> CGFloat {
+        let span = b - a
+        let raw = span == 0 ? c : c + ((value - a) / span) * (d - c)
+        guard clamp else { return raw }
+        let low = min(c, d), high = max(c, d)
+        return min(high, max(low, raw))
+    }
+
     private static func path(_ points: [CGPoint]) -> CGPath {
         let path = CGMutablePath()
         path.move(to: points[0])
@@ -191,129 +480,31 @@ enum WatercolorFill {
         return path
     }
 
-    private static func paint(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat, mask: Bool) -> CGColor {
+    private static func color(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat, mask: Bool) -> CGColor {
         if mask { return CGColor(gray: red, alpha: alpha) }
         return CGColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
     }
 
-    private static func grow(_ poly: Poly, factor: CGFloat, rng: inout NaturalRNG, gaussians: [CGFloat], strength: CGFloat) -> Poly {
-        let trimmed = trim(poly, factor: factor, rng: &rng)
-        var vertices: [CGPoint] = []
-        var modifiers: [CGFloat] = []
-        var outward: [Bool] = []
-        let count = trimmed.vertices.count
-        vertices.reserveCapacity(count * 2)
-        for index in 0..<count {
-            let current = trimmed.vertices[index]
-            let next = trimmed.vertices[(index + 1) % count]
-            var modifier = trimmed.modifiers[index]
-            if factor < 0.98 { modifier = min(modifier, factor * strength + modifier * 0.35) }
-            vertices.append(current)
-            modifiers.append(trimmed.modifiers[index])
-            outward.append(trimmed.outward[index])
-            let sideX = next.x - current.x, sideY = next.y - current.y
-            let mid = CGPoint(x: current.x + sideX * 0.5, y: current.y + sideY * 0.5)
-            if modifier < 0.01 {
-                vertices.append(mid)
-                modifiers.append(trimmed.modifiers[index])
-                outward.append(trimmed.outward[index])
-                continue
-            }
-            // Rotate the edge about ±90° and step along it, the grow() in fill.js.
-            // Outward is away from the centroid, so either winding of a selection bleeds out.
-            let awayX = mid.x - trimmed.center.x, awayY = mid.y - trimmed.center.y
-            let away = max(0.001, hypot(awayX, awayY))
-            let sign: CGFloat = trimmed.outward[index] ? 1 : -1
-            let gauss = gaussians[Int(rng.uniform(0, Double(gaussians.count - 1)))]
-            let distance = gauss * CGFloat(rng.uniform(0.65, 1.35)) * modifier * hypot(sideX, sideY)
-            let wobble = CGFloat(rng.uniform(-1, 1)) * 0.08
-            let nx = sign * awayX / away + wobble * (-sideY)
-            let ny = sign * awayY / away + wobble * sideX
-            let normal = max(0.001, hypot(nx, ny))
-            vertices.append(CGPoint(x: mid.x + nx / normal * distance, y: mid.y + ny / normal * distance))
-            modifiers.append(max(0, trimmed.modifiers[index] + CGFloat(rng.gaussian(deviation: 0.02))))
-            outward.append(trimmed.outward[index])
-        }
-        return downsample(Poly(vertices: vertices, modifiers: modifiers, outward: outward, center: trimmed.center, size: trimmed.size), cap: 480)
-    }
-
-    /// Drops a span of vertices and bridges the gap, so a wash edge is not a copy of the selection.
-    private static func trim(_ poly: Poly, factor: CGFloat, rng: inout NaturalRNG) -> Poly {
-        let count = poly.vertices.count
-        guard factor < 0.98, count > 8 else { return poly }
-        let remove = Int((1 - factor) * CGFloat(count))
-        guard remove >= 2, remove < count - 4 else { return poly }
-        let start = count / 2 - remove / 2
-        let end = min(count, start + remove)
-        let from = poly.vertices[(start - 1 + count) % count]
-        let to = poly.vertices[end % count]
-        let bridge = hypot(to.x - from.x, to.y - from.y)
-        let insert = max(2, Int(bridge / 12))
-        var vertices: [CGPoint] = []
-        var modifiers: [CGFloat] = []
-        var outward: [Bool] = []
-        if start > 0 {
-            vertices.append(contentsOf: poly.vertices[0..<start])
-            modifiers.append(contentsOf: poly.modifiers[0..<start])
-            outward.append(contentsOf: poly.outward[0..<start])
-        }
-        let jitter = bridge * 0.06
-        for step in 1...insert {
-            let t = CGFloat(step) / CGFloat(insert + 1)
-            vertices.append(CGPoint(x: from.x + (to.x - from.x) * t + CGFloat(rng.uniform(Double(-jitter), Double(jitter))),
-                                    y: from.y + (to.y - from.y) * t + CGFloat(rng.uniform(Double(-jitter), Double(jitter)))))
-            modifiers.append(CGFloat(rng.uniform(0.3, 0.5)) * (poly.modifiers.first ?? 0.05))
-            outward.append(poly.outward[start % poly.outward.count])
-        }
-        if end < count {
-            vertices.append(contentsOf: poly.vertices[end...])
-            modifiers.append(contentsOf: poly.modifiers[end...])
-            outward.append(contentsOf: poly.outward[end...])
-        }
-        return Poly(vertices: vertices, modifiers: modifiers, outward: outward, center: poly.center, size: poly.size)
-    }
-
-    private static func scatter(_ poly: Poly, ratio: CGFloat, rng: inout NaturalRNG) -> Poly {
-        let count = poly.vertices.count
-        let keep = max(3, Int(CGFloat(count) * ratio))
-        guard keep < count else { return poly }
-        let step = CGFloat(count) / CGFloat(keep)
-        var vertices: [CGPoint] = []
-        var modifiers: [CGFloat] = []
-        var outward: [Bool] = []
-        for index in 0..<keep {
-            let source = min(count - 1, Int(CGFloat(index) * step + CGFloat(rng.uniform(0, Double(step * 0.8)))))
-            vertices.append(poly.vertices[source])
-            modifiers.append(poly.modifiers[source])
-            outward.append(!poly.outward[source])
-        }
-        return Poly(vertices: vertices, modifiers: modifiers, outward: outward, center: poly.center, size: poly.size)
-    }
-
-    private static func downsample(_ poly: Poly, cap: Int) -> Poly {
-        guard poly.vertices.count > cap else { return poly }
-        let step = Int((CGFloat(poly.vertices.count) / CGFloat(cap)).rounded(.up))
-        var vertices: [CGPoint] = []
-        var modifiers: [CGFloat] = []
-        var outward: [Bool] = []
-        var index = 0
-        while index < poly.vertices.count {
-            vertices.append(poly.vertices[index])
-            modifiers.append(poly.modifiers[index])
-            outward.append(poly.outward[index])
-            index += step
-        }
-        return Poly(vertices: vertices, modifiers: modifiers, outward: outward, center: poly.center, size: poly.size)
-    }
-
-    private static func jittered(_ center: CGPoint, size: CGFloat, rng: inout NaturalRNG) -> CGPoint {
-        CGPoint(x: center.x + CGFloat(rng.uniform(-0.6, 0.6)) * size, y: center.y + CGFloat(rng.uniform(-0.6, 0.6)) * size)
-    }
-
     private static func centroid(_ points: [CGPoint]) -> CGPoint {
-        let count = CGFloat(points.count)
-        let sum = points.reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.x, y: $0.y + $1.y) }
-        return CGPoint(x: sum.x / count, y: sum.y / count)
+        guard points.count >= 8 else {
+            let count = CGFloat(points.count)
+            let sum = points.reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.x, y: $0.y + $1.y) }
+            return CGPoint(x: sum.x / count, y: sum.y / count)
+        }
+        var areaSum: CGFloat = 0, cx: CGFloat = 0, cy: CGFloat = 0
+        for index in points.indices {
+            let next = points[(index + 1) % points.count]
+            let cross = points[index].x * next.y - next.x * points[index].y
+            areaSum += cross
+            cx += (points[index].x + next.x) * cross
+            cy += (points[index].y + next.y) * cross
+        }
+        guard abs(areaSum) > 1e-4 else {
+            let count = CGFloat(points.count)
+            let sum = points.reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.x, y: $0.y + $1.y) }
+            return CGPoint(x: sum.x / count, y: sum.y / count)
+        }
+        return CGPoint(x: cx / (3 * areaSum), y: cy / (3 * areaSum))
     }
 
     private static func area(_ points: [CGPoint]) -> CGFloat {
@@ -326,3 +517,4 @@ enum WatercolorFill {
         return sum / 2
     }
 }
+

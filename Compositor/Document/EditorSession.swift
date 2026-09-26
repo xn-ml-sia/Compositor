@@ -214,6 +214,14 @@ final class EditorSession {
     /// The copies an Option-drag made, and what was selected before it, so Escape can take them away again.
     @ObservationIgnored var transformDuplicate: (copies: [UUID], source: Set<UUID>, primary: UUID?)?
     var brushSettings = BrushSettings() { didSet { refreshGradient() } }
+    /// Last watercolor settings from the Edit menu. A stroke script carries its own.
+    var watercolorOptions = WatercolorOptions()
+    var showWatercolorOptions = false
+    /// Active flow field for scripted strokes, hatch, shapes, and (when set from the brush bar) live drags.
+    var flowField: FlowField?
+    var flowWiggle: CGFloat = 1
+    var hatchOptions = HatchOptions()
+    var showHatchOptions = false
     var spotHealingMode: SpotHealingMode = .contentAware
     var blurMode: BlurToolMode = .liquify
     /// The Brush's two modes: Paint lays down the foreground color, Erase clears pixels away (B and E).

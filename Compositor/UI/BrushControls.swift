@@ -16,6 +16,12 @@ struct BrushControls: View {
                 }
                 .pickerStyle(.menu).fixedSize()
                 .help("Round is the smooth tip. The others are natural-media brushes ported from p5.brush. A tablet uses pen pressure; a mouse uses speed.")
+                Picker("Field", selection: Binding(get: { session.flowField?.name ?? "none" }, set: { session.applyFlowField(name: $0, wiggle: session.flowWiggle, seed: 1) })) {
+                    Text("None").tag("none")
+                    ForEach(FlowField.builtInNames, id: \.self) { Text($0.capitalized).tag($0) }
+                }
+                .pickerStyle(.menu).fixedSize()
+                .help("Steers live strokes along a p5.brush flow field. None leaves the pointer alone.")
                 if session.brushSettings.natural != .round {
                     Text("Wiggle")
                         .scrubbable(sensitivity: 0.02, value: $session.brushSettings.wiggle, range: 0...2)

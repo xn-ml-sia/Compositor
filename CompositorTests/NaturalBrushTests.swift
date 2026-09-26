@@ -70,14 +70,40 @@ struct NaturalBrushTests {
 
     @Test func pressureMapsTabletToThePresetAndSpeedForAMouse() throws {
         let preset = try #require(NaturalBrushKind.marker.preset)
-        let light = NaturalBrushMath.presetPressure(unit: NaturalBrushMath.unitPressure(hardware: 0, from: nil, to: .zero, diameter: 40), preset: preset)
-        let firm = NaturalBrushMath.presetPressure(unit: NaturalBrushMath.unitPressure(hardware: 1, from: nil, to: .zero, diameter: 40), preset: preset)
-        #expect(light == min(preset.pressureMin, preset.pressureMax))
-        #expect(firm == max(preset.pressureMin, preset.pressureMax))
+        let light = NaturalBrushMath.pressure(unit: 0, plotted: 80, span: nil, remain: 80, taperLength: 16, preset: preset, seed: 1, ending: false)
+        let firmBody = NaturalBrushMath.pressure(unit: 1, plotted: 80, span: nil, remain: 80, taperLength: 16, preset: preset, seed: 1, ending: false)
+        let firmEnd = NaturalBrushMath.pressure(unit: 1, plotted: 0, span: nil, remain: 0, taperLength: 16, preset: preset, seed: 1, ending: true)
+        #expect(light == 0)
+        #expect(abs(firmBody - preset.pressureMax) < 0.001)
+        #expect(abs(firmEnd - preset.pressureMin) < 0.001)
         let slow = NaturalBrushMath.unitPressure(hardware: nil, from: CGPoint(x: 0, y: 0), to: CGPoint(x: 1, y: 0), diameter: 40)
         let fast = NaturalBrushMath.unitPressure(hardware: nil, from: CGPoint(x: 0, y: 0), to: CGPoint(x: 400, y: 0), diameter: 40)
         #expect(slow > 0.8)
         #expect(fast == 0)
+    }
+
+    @Test func scriptedPressureSitsOnThePlateauAndCrayonRamps() throws {
+        let pen = try #require(NaturalBrushKind.pen.preset)
+        let curve = NaturalBrushMath.curve(preset: pen, seed: 4)
+        let start = NaturalBrushMath.envelope(plotted: 0, length: 200, preset: pen, curve: curve)
+        let mid = NaturalBrushMath.envelope(plotted: 100, length: 200, preset: pen, curve: curve)
+        let end = NaturalBrushMath.envelope(plotted: 200, length: 200, preset: pen, curve: curve)
+        #expect(start > mid && end > mid)
+        #expect(start > 1.05 && end > 1.05)
+        #expect(mid < 1.05)
+        let again = NaturalBrushMath.envelope(plotted: 0, length: 200, preset: pen, curve: NaturalBrushMath.curve(preset: pen, seed: 4))
+        #expect(start == again)
+        let crayon = try #require(NaturalBrushKind.crayon.preset)
+        let ramp = NaturalBrushMath.curve(preset: crayon, seed: 9)
+        let from = NaturalBrushMath.envelope(plotted: 0, length: 100, preset: crayon, curve: ramp)
+        let to = NaturalBrushMath.envelope(plotted: 100, length: 100, preset: crayon, curve: ramp)
+        #expect(from > to)
+        #expect(from > 1.0 && to < 1.0)
+        let line = [segment(CGPoint(x: 0, y: 0), CGPoint(x: 200, y: 0))]
+        let known = NaturalBrushEngine.walk(segments: line, pressureStart: 1, pressureEnd: 1, cursor: .start, kind: .pen, diameter: 12, seed: 4, gain: 1, wiggle: 0, ending: true, span: 200)
+        let replay = NaturalBrushEngine.walk(segments: line, pressureStart: 1, pressureEnd: 1, cursor: .start, kind: .pen, diameter: 12, seed: 4, gain: 1, wiggle: 0, ending: true, span: 200)
+        #expect(known.dabs == replay.dabs)
+        #expect(!known.dabs.isEmpty)
     }
 
     @Test func stampingATailTwiceDoesNotChangeThePermanentCoverage() {
@@ -116,12 +142,87 @@ struct NaturalBrushTests {
         let rect = [CGPoint(x: 20, y: 20), CGPoint(x: 140, y: 20), CGPoint(x: 140, y: 100), CGPoint(x: 20, y: 100)]
         let passes = WatercolorFill.passes(contours: [rect], seed: 5, bleed: 0.07, texture: 0.8, border: 0.5)
         let replay = WatercolorFill.passes(contours: [rect], seed: 5, bleed: 0.07, texture: 0.8, border: 0.5)
-        #expect(passes.count == 10)
+        #expect(passes.count == 20)
         #expect(passes.count == replay.count)
         #expect(passes[1].polygons.first?.first == replay[1].polygons.first?.first)
         // A rectangle starts with four corners. Growing inserts a point on every edge.
         #expect((passes.first?.polygons.first?.count ?? 0) > 4)
         #expect(!(passes.last?.erases.isEmpty ?? true))
+        #expect(passes.contains { !$0.darker.isEmpty })
+        let outside = passes.contains { pass in
+            pass.polygons.contains { polygon in
+                polygon.contains { $0.x < 19 || $0.x > 141 || $0.y < 19 || $0.y > 101 }
+            }
+        }
+        #expect(outside)
+        let clipped = WatercolorFill.passes(contours: [rect], seed: 5, options: WatercolorOptions(scatter: false, clip: true))
+        #expect(clipped.count == 20)
+        #expect(clipped.allSatisfy { $0.scatterPolygons.isEmpty })
+    }
+
+    @Test func denseCoverageDarkensThePigmentAndAFlatWashDoesNot() {
+        let firm = NaturalShade.brushPigment(red: 1, green: 0.2, blue: 0.2, alpha: 1, opacity: 1)
+        let light = NaturalShade.brushPigment(red: 1, green: 0.2, blue: 0.2, alpha: 0.4, opacity: 1)
+        #expect(firm.red < 0.9)
+        #expect(light.red == 1)
+        #expect(abs(firm.alpha - 1) < 0.001)
+        guard let context = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+              let data = context.data else { return }
+        let pixels = data.bindMemory(to: UInt8.self, capacity: 32 * 8)
+        for index in 0..<64 {
+            pixels[index * 4] = 200
+            pixels[index * 4 + 1] = 40
+            pixels[index * 4 + 2] = 40
+            pixels[index * 4 + 3] = 180
+        }
+        NaturalShade.cpuDarkenRims(in: context)
+        #expect(pixels[3] == 180)
+    }
+
+    @Test func aFlowFieldBendsALineAndReplays() throws {
+        let canvas = CGSize(width: 200, height: 160)
+        let waves = try #require(FlowField.make(name: "waves", wiggle: 1, seed: 3, canvas: canvas))
+        let again = try #require(FlowField.make(name: "waves", wiggle: 1, seed: 3, canvas: canvas))
+        #expect(waves.angles == again.angles)
+        #expect(waves.angles.contains { abs($0) > 1 })
+        #expect(FlowField.make(name: "none", wiggle: 1, seed: 1, canvas: canvas) == nil)
+        let bent = waves.flowLine(x: 20, y: 80, length: 100, direction: 0, pressure: 1)
+        #expect(bent.contains { abs($0.y - 80) > 0.5 })
+        let hand = try #require(FlowField.make(name: "hand", wiggle: 2, seed: 1, canvas: canvas))
+        #expect(hand.wiggle == 2)
+        let custom = try #require(FlowField.make(name: "custom", wiggle: 1, seed: 1, canvas: canvas, columns: 2, rows: 2, angles: [0, 90, 10, 20]))
+        #expect(custom.angles.count == 4)
+    }
+
+    @Test func continuousHatchAddsConnectorsAndGradientOpensTheGap() {
+        let square = [CGPoint(x: 10, y: 10), CGPoint(x: 110, y: 10), CGPoint(x: 110, y: 80), CGPoint(x: 10, y: 80)]
+        let plain = NaturalHatch.lines(contours: [square], angle: 0, spacing: 8, seed: 2)
+        let joined = NaturalHatch.lines(contours: [square], angle: 0, spacing: 8, seed: 2, continuous: true)
+        #expect(plain.allSatisfy { $0.connector == false })
+        #expect(joined.contains { $0.connector })
+        #expect(joined.count > plain.count)
+        let tight = NaturalHatch.lines(contours: [square], angle: 0, spacing: 6, seed: 2)
+        let spread = NaturalHatch.lines(contours: [square], angle: 0, spacing: 6, seed: 2, gradient: 1)
+        #expect(spread.count < tight.count)
+    }
+
+    @Test func aStraightSplineIsThePolylineAndACircleHasManySteps() {
+        let points = [
+            StrokeSample(x: 0, y: 0, pressure: 1, time: nil),
+            StrokeSample(x: 40, y: 0, pressure: 1, time: nil),
+            StrokeSample(x: 40, y: 30, pressure: 0.5, time: nil)
+        ]
+        let flat = ShapeGeometry.spline(points, curvature: 0, closed: false, seed: 1)
+        #expect(flat == points)
+        let bent = ShapeGeometry.spline(points, curvature: 0.8, closed: false, seed: 1)
+        #expect(bent.count > flat.count)
+        let round = ShapeGeometry.build(.circle(x: 50, y: 50, radius: 20, irregularity: 0.2), field: nil, seed: 4)
+        #expect(round.samples.count > 10)
+        let box = ShapeGeometry.build(.rect(x: 0, y: 0, width: 10, height: 8, centered: false), field: nil, seed: 1)
+        #expect(box.samples.count == 5)
+        #expect(box.samples[2].x == 10 && box.samples[2].y == 8)
     }
 
     @Test func contoursFlattenARectangle() {

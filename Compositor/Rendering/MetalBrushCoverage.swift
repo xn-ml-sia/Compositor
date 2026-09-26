@@ -9,6 +9,8 @@ final class MetalBrushCoverage {
     private let pipeline: MTLComputePipelineState
     /// Nil when the natural-media kernel failed to compile. The continuous brush does not depend on it.
     private let naturalPipeline: MTLComputePipelineState?
+    private let shadePipeline: MTLComputePipelineState?
+    private let rimPipeline: MTLComputePipelineState?
     var supportsNaturalDabs: Bool { naturalPipeline != nil }
 
     struct Tile {
@@ -29,6 +31,8 @@ final class MetalBrushCoverage {
         self.queue = queue
         pipeline = try device.makeComputePipelineState(function: function)
         naturalPipeline = Self.makeNaturalPipeline(device: device)
+        shadePipeline = Self.makeFunctionPipeline(device: device, name: "shadeBrush")
+        rimPipeline = Self.makeFunctionPipeline(device: device, name: "shadeFillRim")
     }
     func tile(width: Int, height: Int) throws -> Tile {
         guard let permanent = device.makeBuffer(length: width * height * MemoryLayout<Float>.stride, options: .storageModeShared),
@@ -117,9 +121,90 @@ final class MetalBrushCoverage {
 
     /// Compiled apart from the continuous brush, so a mistake here cannot turn that pipeline off.
     private static func makeNaturalPipeline(device: MTLDevice) -> MTLComputePipelineState? {
+        makeFunctionPipeline(device: device, name: "naturalBrush")
+    }
+
+    private static func makeFunctionPipeline(device: MTLDevice, name: String) -> MTLComputePipelineState? {
         guard let library = try? device.makeLibrary(source: naturalSource, options: nil),
-              let function = library.makeFunction(name: "naturalBrush") else { return nil }
+              let function = library.makeFunction(name: name) else { return nil }
         return try? device.makeComputePipelineState(function: function)
+    }
+
+    /// GPU twin of `NaturalShade.cpuBrush`. Nil sends the caller to the CPU walk.
+    func shadeBrush(coverage: CGContext, red: CGFloat, green: CGFloat, blue: CGFloat, opacity: CGFloat) -> CGImage? {
+        guard let shadePipeline, let source = coverage.data else { return nil }
+        let width = coverage.width, height = coverage.height
+        guard width > 0, height > 0 else { return nil }
+        let tight = packed(source, width: width, height: height, bytesPerRow: coverage.bytesPerRow, pixel: 1)
+        guard let bytes = shade(pipeline: shadePipeline, bytes: tight, width: width, height: height,
+                                color: SIMD4(Float(red), Float(green), Float(blue), Float(opacity))) else { return nil }
+        return image(bytes, width: width, height: height)
+    }
+
+    /// GPU twin of `NaturalShade.cpuDarkenRims`. False leaves the buffer for the CPU walk.
+    func darkenFillRims(in context: CGContext) -> Bool {
+        guard let rimPipeline, context.bitsPerPixel >= 32, let source = context.data else { return false }
+        let width = context.width, height = context.height
+        guard width > 1, height > 1 else { return false }
+        let tight = packed(source, width: width, height: height, bytesPerRow: context.bytesPerRow, pixel: 4)
+        guard let bytes = shade(pipeline: rimPipeline, bytes: tight, width: width, height: height, color: SIMD4(repeating: 0)) else { return false }
+        let destination = source.bindMemory(to: UInt8.self, capacity: context.bytesPerRow * height)
+        let row = context.bytesPerRow
+        bytes.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            for y in 0..<height {
+                memcpy(destination.advanced(by: y * row), base.advanced(by: y * width * 4), width * 4)
+            }
+        }
+        return true
+    }
+
+    private func packed(_ source: UnsafeMutableRawPointer, width: Int, height: Int, bytesPerRow: Int, pixel: Int) -> [UInt8] {
+        let tight = width * pixel
+        if bytesPerRow == tight {
+            return Array(UnsafeBufferPointer(start: source.bindMemory(to: UInt8.self, capacity: tight * height), count: tight * height))
+        }
+        var bytes = [UInt8](repeating: 0, count: tight * height)
+        let raw = source.bindMemory(to: UInt8.self, capacity: bytesPerRow * height)
+        for y in 0..<height {
+            for x in 0..<(tight) { bytes[y * tight + x] = raw[y * bytesPerRow + x] }
+        }
+        return bytes
+    }
+
+    private func shade(pipeline: MTLComputePipelineState, bytes: [UInt8], width: Int, height: Int, color: SIMD4<Float>) -> [UInt8]? {
+        let outLength = width * height * 4
+        guard !bytes.isEmpty, let input = device.makeBuffer(bytes: bytes, length: bytes.count, options: .storageModeShared),
+              let output = device.makeBuffer(length: outLength, options: .storageModeShared),
+              let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else { return nil }
+        var uniforms = ShadeUniforms(color: color, size: SIMD4(UInt32(width), UInt32(height), 0, 0))
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(input, offset: 0, index: 0)
+        encoder.setBuffer(output, offset: 0, index: 1)
+        encoder.setBytes(&uniforms, length: MemoryLayout<ShadeUniforms>.stride, index: 2)
+        encoder.dispatchThreads(MTLSize(width: width, height: height, depth: 1), threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
+        encoder.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        guard command.status == .completed else { return nil }
+        let pointer = output.contents().bindMemory(to: UInt8.self, capacity: outLength)
+        return Array(UnsafeBufferPointer(start: pointer, count: outLength))
+    }
+
+    private func image(_ bytes: [UInt8], width: Int, height: Int) -> CGImage? {
+        guard let image = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                    space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+              let destination = image.data else { return nil }
+        bytes.withUnsafeBytes { raw in
+            if let base = raw.baseAddress { memcpy(destination, base, width * height * 4) }
+        }
+        return image.makeImage()
+    }
+
+    private struct ShadeUniforms {
+        var color: SIMD4<Float>
+        var size: SIMD4<UInt32>
     }
 
     /// The continuous kernel writes a packed buffer and the context row stride matches it.
@@ -280,6 +365,73 @@ kernel void naturalBrush(device float *permanent [[buffer(0)]],
     float shown = value;
     for (uint i = u.counts.z; i < u.counts.w; ++i) shown = naturalOver(shown, p, dabs[i], u.geometry.z);
     preview[index] = uchar(round(255.0f * saturate(shown)));
+}
+
+// Colouring pass from p5.brush shader.frag. Brush: darken pigment where coverage exceeds 0.7.
+// Fill: raise and darken the rim where the scaled alpha gradient is steep. No spectral mix.
+struct ShadeUniforms {
+    float4 color;
+    uint4 size; // width, height, bytes per pixel, unused
+};
+
+float shadeStep(float edge0, float edge1, float value) {
+    float t = saturate((value - edge0) / (edge1 - edge0));
+    return t * t * (3.0f - 2.0f * t);
+}
+
+float3 shadePigment(float3 color, float alpha) {
+    if (alpha > 0.7f) {
+        float blacken = 0.5f * (min(alpha, 1.0f) - 0.7f);
+        return max(color * (1.0f - blacken) - 0.5f * blacken, float3(0.0f));
+    }
+    return color;
+}
+
+kernel void shadeBrush(device const uchar *coverage [[buffer(0)]],
+                       device uchar4 *out [[buffer(1)]],
+                       constant ShadeUniforms &u [[buffer(2)]],
+                       uint2 pixel [[thread_position_in_grid]]) {
+    if (pixel.x >= u.size.x || pixel.y >= u.size.y) return;
+    uint index = pixel.y * u.size.x + pixel.x;
+    float alpha = float(coverage[index]) / 255.0f;
+    float3 pigment = shadePigment(u.color.rgb, alpha);
+    float paint = min(alpha, 1.0f) * saturate(u.color.a);
+    out[index] = uchar4(uchar(round(255.0f * pigment.r * paint)),
+                        uchar(round(255.0f * pigment.g * paint)),
+                        uchar(round(255.0f * pigment.b * paint)),
+                        uchar(round(255.0f * paint)));
+}
+
+kernel void shadeFillRim(device const uchar4 *source [[buffer(0)]],
+                         device uchar4 *out [[buffer(1)]],
+                         constant ShadeUniforms &u [[buffer(2)]],
+                         uint2 pixel [[thread_position_in_grid]]) {
+    if (pixel.x >= u.size.x || pixel.y >= u.size.y) return;
+    int width = int(u.size.x), height = int(u.size.y);
+    uint index = pixel.y * u.size.x + pixel.x;
+    float coverage = float(source[index].a) / 255.0f;
+    if (coverage <= 0.0f) { out[index] = source[index]; return; }
+    float blur = 0.0f;
+    for (int oy = -2; oy <= 2; oy += 2) {
+        for (int ox = -2; ox <= 2; ox += 2) {
+            int nx = clamp(int(pixel.x) + ox, 0, width - 1);
+            int ny = clamp(int(pixel.y) + oy, 0, height - 1);
+            int lx = clamp(nx - 1, 0, width - 1), rx = clamp(nx + 1, 0, width - 1);
+            int uy = clamp(ny - 1, 0, height - 1), dy = clamp(ny + 1, 0, height - 1);
+            float dx = (float(source[ny * width + rx].a) - float(source[ny * width + lx].a)) / 255.0f * 15.0f;
+            float dyv = (float(source[dy * width + nx].a) - float(source[uy * width + nx].a)) / 255.0f * 15.0f;
+            blur += shadeStep(0.05f, 0.35f, length(float2(dx, dyv)));
+        }
+    }
+    blur /= 9.0f;
+    float paint = min(1.0f, coverage + blur * 0.1f);
+    float dark = 1.0f - 0.45f * blur;
+    float scale = coverage > 0.0f ? paint / coverage * dark : 0.0f;
+    uchar4 pixelIn = source[index];
+    out[index] = uchar4(uchar(round(float(pixelIn.r) * scale)),
+                        uchar(round(float(pixelIn.g) * scale)),
+                        uchar(round(float(pixelIn.b) * scale)),
+                        uchar(round(255.0f * paint)));
 }
 """
 }

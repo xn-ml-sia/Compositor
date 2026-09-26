@@ -74,6 +74,7 @@ struct StrokeFill: Equatable, Sendable {
     var green: CGFloat
     var blue: CGFloat
     var seed: UInt64?
+    var options: WatercolorOptions = WatercolorOptions()
 }
 
 struct StrokeHatch: Equatable, Sendable {
@@ -86,6 +87,58 @@ struct StrokeHatch: Equatable, Sendable {
     var red: CGFloat?
     var green: CGFloat?
     var blue: CGFloat?
+    var rand: CGFloat = 0
+    var continuous: Bool = false
+    var gradient: CGFloat = 0
+    var brush: NaturalBrushKind? = nil
+    var diameter: CGFloat? = nil
+}
+
+struct StrokeField: Equatable, Sendable {
+    var name: String
+    var wiggle: CGFloat?
+    var seed: UInt64?
+    var columns: Int?
+    var rows: Int?
+    /// Row-major angles in degrees for `"name":"custom"`.
+    var angles: [CGFloat]?
+}
+
+struct StrokeFlowLine: Equatable, Sendable {
+    var layer: String?
+    var x: CGFloat
+    var y: CGFloat
+    var length: CGFloat
+    var direction: CGFloat
+    var pressure: CGFloat?
+    var seed: UInt64?
+    var pace: StrokePace
+}
+
+struct StrokePlotSegment: Equatable, Sendable {
+    var angle: CGFloat
+    var length: CGFloat
+    var pressure: CGFloat
+}
+
+enum StrokeGeometry: Equatable, Sendable {
+    case spline(points: [StrokeSample], curvature: CGFloat)
+    case circle(x: CGFloat, y: CGFloat, radius: CGFloat, irregularity: CGFloat)
+    case rect(x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat, centered: Bool)
+    case arc(x: CGFloat, y: CGFloat, radius: CGFloat, start: CGFloat, end: CGFloat)
+    case polygon(points: [StrokeSample])
+    case shape(points: [StrokeSample], curvature: CGFloat, closed: Bool)
+    case plot(x: CGFloat, y: CGFloat, segments: [StrokePlotSegment], endPressure: CGFloat)
+}
+
+struct StrokeShape: Equatable, Sendable {
+    var layer: String?
+    var seed: UInt64?
+    var pace: StrokePace
+    var geometry: StrokeGeometry
+    var outline: Bool
+    var fill: StrokeFill?
+    var hatch: StrokeHatch?
 }
 
 enum StrokeOp: Equatable, Sendable {
@@ -95,6 +148,9 @@ enum StrokeOp: Equatable, Sendable {
     case watercolor(StrokeFill)
     case hatch(StrokeHatch)
     case clear(layer: String)
+    case field(StrokeField)
+    case flowLine(StrokeFlowLine)
+    case figure(StrokeShape)
 }
 
 struct StrokeScriptItem: Equatable, Sendable {
@@ -107,6 +163,16 @@ struct StrokeScriptItem: Equatable, Sendable {
 enum StrokeTiming {
     /// A comfortable hand, used when a point does not carry its own time.
     static let livePixelsPerSecond: CGFloat = 640
+
+    static func length(_ points: [StrokeSample]) -> CGFloat {
+        var total: CGFloat = 0
+        var previous: StrokeSample?
+        for point in points {
+            if let previous { total += hypot(point.x - previous.x, point.y - previous.y) }
+            previous = point
+        }
+        return total
+    }
 
     /// Seconds from the start of the stroke, already scaled by the pace.
     static func times(_ points: [StrokeSample], pace: StrokePace) -> [CGFloat] {
@@ -174,10 +240,29 @@ enum StrokeScriptReader {
             let spacing = double(object["spacing"]).map { CGFloat(max(1, $0)) }
             let angle = CGFloat(double(object["angle"]) ?? 45)
             let ink = color(object["color"])
-            return .hatch(StrokeHatch(layer: layer, polygon: polygon, angle: angle.isFinite ? angle : 45, spacing: spacing, seed: seed(object["seed"]), red: ink?.0, green: ink?.1, blue: ink?.2))
+            let preset = string(object["brush"]).flatMap { StrokeScriptReader.kind(named: $0) }
+            return .hatch(StrokeHatch(layer: layer, polygon: polygon, angle: angle.isFinite ? angle : 45, spacing: spacing, seed: seed(object["seed"]), red: ink?.0, green: ink?.1, blue: ink?.2,
+                                      rand: CGFloat(double(object["rand"]) ?? 0), continuous: bool(object["continuous"]) ?? false,
+                                      gradient: CGFloat(double(object["gradient"]) ?? 0), brush: preset,
+                                      diameter: double(object["diameter"]).map { CGFloat(max(1, $0)) }))
         case "clear":
             guard let layer = string(object["layer"]), !layer.isEmpty else { return nil }
             return .clear(layer: layer)
+        case "field":
+            let name = string(object["name"]) ?? (object["wiggle"] != nil ? "hand" : "")
+            guard !name.isEmpty else { return nil }
+            return .field(StrokeField(name: name, wiggle: double(object["wiggle"]).map { CGFloat($0) }, seed: seed(object["seed"]),
+                                      columns: double(object["columns"]).map { Int($0) }, rows: double(object["rows"]).map { Int($0) },
+                                      angles: angles(object["angles"])))
+        case "spline", "circle", "rect", "arc", "polygon", "shape", "plot":
+            guard let figure = figure(name, object) else { return nil }
+            return .figure(figure)
+        case "flowLine":
+            guard let x = double(object["x"]), let y = double(object["y"]), let length = double(object["length"]) else { return nil }
+            let direction = double(object["direction"]) ?? double(object["dir"]) ?? 0
+            let pressure = double(object["pressure"]).map { CGFloat(min(1, max(0, $0))) }
+            return .flowLine(StrokeFlowLine(layer: string(object["layer"]), x: CGFloat(x), y: CGFloat(y), length: CGFloat(max(0, length)),
+                                            direction: CGFloat(direction), pressure: pressure, seed: seed(object["seed"]), pace: pace(object["pace"])))
         default:
             return nil
         }
@@ -240,10 +325,95 @@ enum StrokeScriptReader {
                                   erase: bool(object["erase"]) ?? false, layer: string(object["layer"]))
     }
 
+    private static func figure(_ name: String, _ object: [String: Any]) -> StrokeShape? {
+        let geometry: StrokeGeometry
+        switch name {
+        case "spline":
+            guard let samples = points(object["points"]), samples.count >= 2 else { return nil }
+            geometry = .spline(points: samples, curvature: CGFloat(min(1, max(0, double(object["curvature"]) ?? 0.5))))
+        case "circle":
+            guard let x = double(object["x"]), let y = double(object["y"]), let radius = double(object["radius"]) else { return nil }
+            geometry = .circle(x: CGFloat(x), y: CGFloat(y), radius: CGFloat(max(0, radius)), irregularity: CGFloat(double(object["r"]) ?? double(object["irregularity"]) ?? 0))
+        case "rect":
+            guard let x = double(object["x"]), let y = double(object["y"]), let width = double(object["w"] ?? object["width"]), let height = double(object["h"] ?? object["height"]) else { return nil }
+            let mode = (string(object["mode"]) ?? "corner").lowercased()
+            geometry = .rect(x: CGFloat(x), y: CGFloat(y), width: CGFloat(width), height: CGFloat(height), centered: mode == "center")
+        case "arc":
+            guard let x = double(object["x"]), let y = double(object["y"]), let radius = double(object["radius"]),
+                  let start = double(object["start"]), let end = double(object["end"]) else { return nil }
+            geometry = .arc(x: CGFloat(x), y: CGFloat(y), radius: CGFloat(max(0, radius)), start: CGFloat(start), end: CGFloat(end))
+        case "polygon":
+            guard let samples = points(object["points"]), samples.count >= 3 else { return nil }
+            geometry = .polygon(points: samples)
+        case "shape":
+            guard let samples = points(object["points"]), samples.count >= 2 else { return nil }
+            geometry = .shape(points: samples, curvature: CGFloat(min(1, max(0, double(object["curvature"]) ?? 0))), closed: bool(object["closed"]) ?? false)
+        case "plot":
+            guard let x = double(object["x"]), let y = double(object["y"]), let segments = plotSegments(object["segments"]), !segments.isEmpty else { return nil }
+            geometry = .plot(x: CGFloat(x), y: CGFloat(y), segments: segments, endPressure: CGFloat(double(object["endPressure"]) ?? 1))
+        default:
+            return nil
+        }
+        let layer = string(object["layer"])
+        return StrokeShape(layer: layer, seed: seed(object["seed"]), pace: pace(object["pace"]), geometry: geometry,
+                           outline: bool(object["outline"]) ?? true, fill: nestedFill(object["fill"], layer: layer ?? ""),
+                           hatch: nestedHatch(object["hatch"], layer: layer ?? ""))
+    }
+
+    private static func plotSegments(_ value: Any?) -> [StrokePlotSegment]? {
+        guard let list = value as? [Any] else { return nil }
+        var segments: [StrokePlotSegment] = []
+        for item in list {
+            guard let object = item as? [String: Any], let angle = double(object["angle"]), let length = double(object["length"]) else { return nil }
+            segments.append(StrokePlotSegment(angle: CGFloat(angle), length: CGFloat(max(0, length)), pressure: CGFloat(min(1, max(0, double(object["pressure"]) ?? 1)))))
+        }
+        return segments
+    }
+
+    private static func nestedFill(_ value: Any?, layer: String) -> StrokeFill? {
+        if value == nil || value is NSNull { return nil }
+        if let flag = value as? Bool { return flag ? StrokeFill(layer: layer, polygon: [], red: 0, green: 0, blue: 0, seed: nil) : nil }
+        guard let object = value as? [String: Any] else { return nil }
+        var carried = object
+        carried["layer"] = layer
+        carried["polygon"] = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+        if carried["color"] == nil { carried["color"] = [0, 0, 0, 1] }
+        return fill(carried)
+    }
+
+    private static func nestedHatch(_ value: Any?, layer: String) -> StrokeHatch? {
+        if value == nil || value is NSNull { return nil }
+        if let flag = value as? Bool, flag == false { return nil }
+        var object = value as? [String: Any] ?? [:]
+        object["layer"] = layer
+        return hatch(from: object)
+    }
+
+    private static func hatch(from object: [String: Any]) -> StrokeHatch? {
+        guard let layer = string(object["layer"]) else { return nil }
+        let spacing = double(object["spacing"]).map { CGFloat(max(1, $0)) }
+        let angle = CGFloat(double(object["angle"]) ?? 45)
+        let ink = color(object["color"])
+        let preset = string(object["brush"]).flatMap { kind(named: $0) }
+        return StrokeHatch(layer: layer, polygon: [], angle: angle.isFinite ? angle : 45, spacing: spacing, seed: seed(object["seed"]),
+                           red: ink?.0, green: ink?.1, blue: ink?.2, rand: CGFloat(double(object["rand"]) ?? 0),
+                           continuous: bool(object["continuous"]) ?? false, gradient: CGFloat(double(object["gradient"]) ?? 0),
+                           brush: preset, diameter: double(object["diameter"]).map { CGFloat(max(1, $0)) })
+    }
+
     private static func fill(_ object: [String: Any]) -> StrokeFill? {
         guard let layer = string(object["layer"]), !layer.isEmpty, let polygon = polygon(object["polygon"]), polygon.count >= 3,
               let color = color(object["color"]) else { return nil }
-        return StrokeFill(layer: layer, polygon: polygon, red: color.0, green: color.1, blue: color.2, seed: seed(object["seed"]))
+        var options = WatercolorOptions()
+        if let bleed = double(object["bleed"]) { options.bleed = CGFloat(bleed) }
+        if let texture = double(object["texture"]) { options.texture = CGFloat(texture) }
+        if let border = double(object["border"]) { options.border = CGFloat(border) }
+        if let opacity = double(object["opacity"]) { options.opacity = CGFloat(opacity) }
+        if let direction = string(object["direction"]) { options.outward = direction.lowercased() != "in" }
+        if object["angle"] is NSNull == false, let angle = double(object["angle"]) { options.angle = CGFloat(angle) }
+        if let scatter = bool(object["scatter"]) { options.scatter = scatter }
+        if let clip = bool(object["clip"]) { options.clip = clip }
+        return StrokeFill(layer: layer, polygon: polygon, red: color.0, green: color.1, blue: color.2, seed: seed(object["seed"]), options: options.clamped())
     }
 
     private static func pace(_ value: Any?) -> StrokePace {
@@ -266,6 +436,16 @@ enum StrokeScriptReader {
             samples.append(StrokeSample(x: CGFloat(x), y: CGFloat(y), pressure: pressure, time: time))
         }
         return samples
+    }
+
+    private static func angles(_ value: Any?) -> [CGFloat]? {
+        guard let list = value as? [Any] else { return nil }
+        var angles: [CGFloat] = []
+        for item in list {
+            guard let number = double(item), number.isFinite else { return nil }
+            angles.append(CGFloat(number))
+        }
+        return angles
     }
 
     private static func polygon(_ value: Any?) -> [CGPoint]? {
