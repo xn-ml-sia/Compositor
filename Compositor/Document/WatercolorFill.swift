@@ -297,9 +297,10 @@ enum WatercolorFill {
     /// share of the side's own length, so a long side makes a big tooth. fill.js leans on its inputs
     /// having similar sides; ours do not (an arc's chord, a trim bridge, the sparse layer's 30 wide
     /// sides), and a fixed polygon regrown twenty times at exact midpoints stacked the same tooth in
-    /// the same place until it read as a row of triangles. So sides longer than `maxSide` are split
-    /// first, the new vertex lands at a random point along its piece, and the push and its angle vary
-    /// per vertex. The fringe comes out soft and irregular instead of regular.
+    /// the same place until it read as a row of triangles. So a long side with a big push becomes a
+    /// rounded, lopsided lobe of the same height over several uneven pieces, the new vertex lands at a
+    /// random point along its side, and the angle varies per vertex. The fringe comes out soft and
+    /// irregular, and the wash still bleeds as far as fill.js's.
     private static func grow(_ poly: Poly, factor: CGFloat, rng: inout NaturalRNG, poolA: [CGFloat], poolB: [CGFloat], bleed: CGFloat, outward: Bool) -> Poly {
         let trimmed = trim(poly, factor: factor, rng: &rng)
         let len = trimmed.v.count
@@ -318,40 +319,61 @@ enum WatercolorFill {
             var mod = factor == 999 ? CGFloat(rng.uniform(0.6, 0.8)) : bleed
             if factor < 997 { mod = mine }
             let fullX = next.x - current.x, fullY = next.y - current.y
-            // Only the big pushes (999's 0.6…0.8, a trim bridge's 0.3…0.5) make teeth worth splitting.
-            // A bleed-sized push keeps fill.js's one vertex per side, so the wash still spreads as far.
-            let pieces = mod > 0.2 ? min(12, max(1, Int((hypot(fullX, fullY) / maxSide).rounded(.up)))) : 1
-            // Each piece pushes by more than its own share, so a split side still roughens, just in
-            // several smaller, uneven bumps instead of one big triangle.
-            let reach = pow(CGFloat(pieces), 0.3)
-            // Uneven split points, so the bumps along one side are not evenly spaced either.
+            let fullLength = hypot(fullX, fullY)
+            vertices.append(current)
+            modifiers.append(mine)
+            dirs.append(flag)
+            if mod < 0.05 {
+                vertices.append(CGPoint(x: current.x + fullX * 0.5, y: current.y + fullY * 0.5))
+                modifiers.append(mine)
+                dirs.append(flag)
+                continue
+            }
+            let rot = (flag ? bleedDir : -bleedDir) + CGFloat(rng.uniform(-1, 1)) * 12
+            let radians = rot * CGFloat.pi / 180
+            let c = cos(radians), s = sin(radians)
+            let sample = poolA[Int(rng.uniform(0, 1) * Double(poolA.count)) % poolA.count]
+            let push = max(0, sample) * CGFloat(rng.uniform(0.65, 1.35)) * mod
+            // Only the big pushes (999's 0.6…0.8, a trim bridge's 0.3…0.5) on long sides make teeth.
+            // A bleed-sized push keeps fill.js's single vertex per side.
+            let pieces = mod > 0.2 ? min(12, max(1, Int((fullLength / maxSide).rounded(.up)))) : 1
+            if pieces == 1 {
+                let dirX = c * fullX + s * fullY
+                let dirY = c * fullY - s * fullX
+                let along = CGFloat(rng.uniform(0.3, 0.7))
+                let nextMod = mine + poolB[Int(rng.uniform(0, 1) * Double(poolB.count)) % poolB.count]
+                vertices.append(CGPoint(x: current.x + fullX * along + dirX * push, y: current.y + fullY * along + dirY * push))
+                modifiers.append(nextMod)
+                dirs.append(flag)
+                continue
+            }
+            // A long side keeps fill.js's full push (so the wash bleeds as far), but spread over a
+            // rounded, lopsided lobe: every cut point and piece midpoint rides the same hump with its
+            // own wobble, instead of one straight-sided triangle.
+            let unitX = (c * fullX + s * fullY) / max(fullLength, 1e-6)
+            let unitY = (c * fullY - s * fullX) / max(fullLength, 1e-6)
+            let height = push * fullLength
+            let peak = CGFloat(rng.uniform(0.25, 0.75))
+            func hump(_ t: CGFloat) -> CGFloat {
+                let u = t < peak ? t / peak : (1 - t) / (1 - peak)
+                return sin(min(1, max(0, u)) * CGFloat.pi / 2)
+            }
             var cuts: [CGFloat] = [0]
-            for piece in 1..<max(pieces, 1) { cuts.append((CGFloat(piece) + CGFloat(rng.uniform(-0.35, 0.35))) / CGFloat(pieces)) }
+            for piece in 1..<pieces { cuts.append((CGFloat(piece) + CGFloat(rng.uniform(-0.35, 0.35))) / CGFloat(pieces)) }
             cuts.append(1)
             for piece in 0..<pieces {
                 let t0 = cuts[piece], t1 = cuts[piece + 1]
-                let start = CGPoint(x: current.x + fullX * t0, y: current.y + fullY * t0)
-                let sideX = fullX * (t1 - t0), sideY = fullY * (t1 - t0)
-                vertices.append(start)
-                modifiers.append(mine)
-                dirs.append(flag)
-                if mod < 0.05 {
-                    vertices.append(CGPoint(x: start.x + sideX * 0.5, y: start.y + sideY * 0.5))
-                    modifiers.append(mine)
+                if piece > 0 {
+                    let lift = height * hump(t0) * CGFloat(rng.uniform(0.8, 1.1))
+                    vertices.append(CGPoint(x: current.x + fullX * t0 + unitX * lift, y: current.y + fullY * t0 + unitY * lift))
+                    modifiers.append(mine + poolB[Int(rng.uniform(0, 1) * Double(poolB.count)) % poolB.count])
                     dirs.append(flag)
-                    continue
                 }
-                let rot = (flag ? bleedDir : -bleedDir) + CGFloat(rng.uniform(-1, 1)) * 12
-                let radians = rot * CGFloat.pi / 180
-                let c = cos(radians), s = sin(radians)
-                let dirX = c * sideX + s * sideY
-                let dirY = c * sideY - s * sideX
-                let sample = poolA[Int(rng.uniform(0, 1) * Double(poolA.count)) % poolA.count]
-                let distance = max(0, sample) * CGFloat(rng.uniform(pieces > 1 ? 0.05 : 0.35, pieces > 1 ? 1.6 : 1.45)) * mod * reach
-                let along = CGFloat(rng.uniform(0.3, 0.7))
-                let nextMod = mine + poolB[Int(rng.uniform(0, 1) * Double(poolB.count)) % poolB.count]
-                vertices.append(CGPoint(x: start.x + sideX * along + dirX * distance, y: start.y + sideY * along + dirY * distance))
-                modifiers.append(nextMod)
+                let t = t0 + (t1 - t0) * CGFloat(rng.uniform(0.3, 0.7))
+                let wobble = (t1 - t0) * fullLength * CGFloat(rng.uniform(-0.15, 0.3))
+                let lift = height * hump(t) * CGFloat(rng.uniform(0.85, 1.15)) + wobble
+                vertices.append(CGPoint(x: current.x + fullX * t + unitX * lift, y: current.y + fullY * t + unitY * lift))
+                modifiers.append(mine + poolB[Int(rng.uniform(0, 1) * Double(poolB.count)) % poolB.count])
                 dirs.append(flag)
             }
         }

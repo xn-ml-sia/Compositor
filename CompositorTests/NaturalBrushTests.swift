@@ -231,6 +231,26 @@ struct NaturalBrushTests {
         }
     }
 
+    @Test func aSplitWashSideStillBleedsOutward() {
+        // Splitting long sides must not flatten the bleed: a 0.12 outward wash on a 200×150 rectangle
+        // still reaches several pixels past the outline (splitting into flat pieces reached 2–4).
+        let rect = [CGPoint(x: 0, y: 0), CGPoint(x: 200, y: 0), CGPoint(x: 200, y: 150), CGPoint(x: 0, y: 150)]
+        var total: CGFloat = 0
+        let seeds: [UInt64] = [1, 7, 21, 44]
+        for seed in seeds {
+            var reach: CGFloat = 0
+            for pass in WatercolorFill.passes(contours: [rect], seed: seed, options: WatercolorOptions(bleed: 0.12)) {
+                for polygon in pass.polygons {
+                    for point in polygon {
+                        reach = max(reach, -point.x, point.x - 200, -point.y, point.y - 150)
+                    }
+                }
+            }
+            total += reach
+        }
+        #expect(total / CGFloat(seeds.count) > 5)
+    }
+
     @Test func retintPutsAFaintWashBackOnItsInk() throws {
         let context = try BrushRaster.context(width: 4, height: 1, mask: false)
         let pixels = try #require(context.data).bindMemory(to: UInt8.self, capacity: 16)
