@@ -271,6 +271,10 @@ struct NaturalBrushTests {
         #expect(abs(meanX - 50) < 4)
         let perfect = ShapeGeometry.build(.circle(x: 0, y: 0, radius: 30, irregularity: 0), field: nil, seed: 9)
         #expect(perfect.samples.allSatisfy { abs(hypot($0.x, $0.y) - 30) < 0.01 })
+        // p5.brush's arc runs counter-clockwise on screen: 0° is right, 90° is up (smaller y).
+        let quarter = ShapeGeometry.build(.arc(x: 0, y: 0, radius: 10, start: 0, end: 90), field: nil, seed: 1)
+        #expect(abs(quarter.samples.first!.x - 10) < 0.01 && abs(quarter.samples.first!.y) < 0.01)
+        #expect(abs(quarter.samples.last!.x) < 0.01 && abs(quarter.samples.last!.y + 10) < 0.01)
         let box = ShapeGeometry.build(.rect(x: 0, y: 0, width: 10, height: 8, centered: false), field: nil, seed: 1)
         #expect(box.samples.count == 5)
         #expect(box.samples[2].x == 10 && box.samples[2].y == 8)

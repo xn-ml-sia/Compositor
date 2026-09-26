@@ -104,7 +104,7 @@ Draws `length` pixels from `(x, y)` headed `direction` degrees, bent by the acti
 {"op":"plot","layer":"Wash","x":30,"y":30,"segments":[{"angle":0,"length":40,"pressure":1},{"angle":90,"length":24,"pressure":0.6}],"endPressure":0.4}
 ```
 
-`circle`'s `r` is irregularity. `rect` `mode` is `"corner"` or `"center"`. `shape` with `curvature` 0 is the polyline, and `closed` true repeats the first point. `plot` is a sequence of angle (degrees) and length steps from the start point, the same idea as `beginStroke` / `move` / `endStroke`. A point inside a shape is `[x, y]` or `[x, y, pressure]`.
+`circle`'s `r` is irregularity. `arc` angles are degrees measured the way p5.brush's `arc` measures them: 0 points right and angles increase counter-clockwise on screen (y is down, so 90 is straight up), from `start` to `end`. This is the reverse of p5's own `arc()`. `"start":200,"end":340` draws the lower half of the circle, and `"start":20,"end":160` the upper half. `rect` `mode` is `"corner"` or `"center"`. `shape` with `curvature` 0 is the polyline, and `closed` true repeats the first point. `plot` is a sequence of angle (degrees) and length steps from the start point, the same idea as `beginStroke` / `move` / `endStroke`. A point inside a shape is `[x, y]` or `[x, y, pressure]`.
 
 ### `clear`
 

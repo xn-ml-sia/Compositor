@@ -127,6 +127,8 @@ enum ShapeGeometry {
         return corners.map { StrokeSample(x: $0.x, y: $0.y, pressure: 1, time: nil) }
     }
 
+    /// Same convention as p5.brush `arc` (primitives.js): the start point is `(x + r cos a, y - r sin a)`,
+    /// so angles run counter-clockwise on a y-down screen. That is the reverse of p5's own `arc()`.
     private static func arc(x: CGFloat, y: CGFloat, radius: CGFloat, start: CGFloat, end: CGFloat) -> [StrokeSample] {
         var sweep = (end - start).truncatingRemainder(dividingBy: 360)
         if sweep < 0 { sweep += 360 }
