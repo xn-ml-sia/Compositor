@@ -323,6 +323,7 @@ extension EditorSession {
                 brushRevision += 1
                 await Task.yield()
             }
+            if !isMaskSelected { NaturalShade.retint(buffer, red: ink.red, green: ink.green, blue: ink.blue) }
             NaturalShade.darkenRims(in: buffer)
             if let image = buffer.makeImage() { try stroke.compositeImage(image, in: area) }
             guard !stroke.patches.isEmpty else { return }

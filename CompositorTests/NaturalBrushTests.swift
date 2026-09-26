@@ -200,6 +200,15 @@ struct NaturalBrushTests {
         #expect(custom.angles.count == 4)
     }
 
+    @Test func retintPutsAFaintWashBackOnItsInk() throws {
+        let context = try BrushRaster.context(width: 4, height: 1, mask: false)
+        let pixels = try #require(context.data).bindMemory(to: UInt8.self, capacity: 16)
+        // Premultiplied (122, 122, 163) at alpha 25 has drifted far from the ink (0.2, 0.45, 0.8).
+        for (index, value) in [12, 12, 16, 25, 0, 0, 0, 0, 40, 90, 160, 200, 1, 1, 1, 1].enumerated() { pixels[index] = UInt8(value) }
+        NaturalShade.retint(context, red: 0.2, green: 0.45, blue: 0.8)
+        #expect(Array(UnsafeBufferPointer(start: pixels, count: 16)) == [5, 11, 20, 25, 0, 0, 0, 0, 40, 90, 160, 200, 0, 0, 1, 1])
+    }
+
     @Test func continuousHatchAddsConnectorsAndGradientOpensTheGap() {
         let square = [CGPoint(x: 10, y: 10), CGPoint(x: 110, y: 10), CGPoint(x: 110, y: 80), CGPoint(x: 10, y: 80)]
         let plain = NaturalHatch.lines(contours: [square], angle: 0, spacing: 8, seed: 2)

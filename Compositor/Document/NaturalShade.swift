@@ -31,6 +31,26 @@ enum NaturalShade {
     }
 
     /// Edge darkening for a watercolor buffer. Flat interiors stay put; a steep alpha edge gets a darker, slightly heavier rim.
+    /// A wash is one ink. Twenty translucent layers and destination-out erases in an 8-bit
+    /// premultiplied buffer round each channel on its own, so faint areas drift toward pink or grey.
+    /// This puts every pixel back on the ink at its own alpha, before the rim pass darkens it.
+    static func retint(_ context: CGContext, red: CGFloat, green: CGFloat, blue: CGFloat) {
+        guard context.bitsPerPixel == 32, context.bitsPerComponent == 8, let data = context.data else { return }
+        let width = context.width, height = context.height, row = context.bytesPerRow
+        let pixels = data.bindMemory(to: UInt8.self, capacity: row * height)
+        let ink = (Float(min(1, max(0, red))), Float(min(1, max(0, green))), Float(min(1, max(0, blue))))
+        for y in 0..<height {
+            for x in 0..<width {
+                let index = y * row + x * 4
+                let alpha = Float(pixels[index + 3])
+                guard alpha > 0 else { continue }
+                pixels[index] = UInt8(min(alpha, (ink.0 * alpha).rounded()))
+                pixels[index + 1] = UInt8(min(alpha, (ink.1 * alpha).rounded()))
+                pixels[index + 2] = UInt8(min(alpha, (ink.2 * alpha).rounded()))
+            }
+        }
+    }
+
     static func darkenRims(in context: CGContext) {
         guard context.bitsPerPixel >= 32 else { return }
         if MetalBrushCoverage.shared?.darkenFillRims(in: context) == true { return }
