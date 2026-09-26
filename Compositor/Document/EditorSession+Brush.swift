@@ -248,24 +248,33 @@ extension EditorSession {
     /// Watercolor wash of the current selection, revealed a layer at a time, then one undo step.
     /// The wash is built in its own buffer, so the erases lift pigment and not the layer under it.
     /// Main actor: `Task.yield` would otherwise resume off the thread that owns AppKit.
+    /// `path` fills that polygon instead of the current selection. A stroke script passes one;
+    /// the menu command leaves it nil and keeps requiring a selection.
     @MainActor
-    func watercolorFillSelection() async {
-        guard canEditPixels, let document, let layer = activeLayer, let selection, !selection.isEmpty else {
+    func watercolorFillSelection(path override: CGPath? = nil, red: CGFloat? = nil, green: CGFloat? = nil, blue: CGFloat? = nil, seed explicitSeed: UInt64? = nil) async {
+        let outline = override ?? selection?.path
+        let region = outline.map { DocumentSelection(path: $0) }
+        guard canEditLayers, let document, let layer = activeLayer, layer.isGroup == false, layer.adjustment == nil,
+              let outline, let region, !region.isEmpty else {
             brushError = "Select an area to fill with watercolor."
             return
         }
-        let contours = SelectionContours.make(from: selection.path)
+        if override == nil {
+            guard canEditPixels else { brushError = "Select an area to fill with watercolor."; return }
+        }
+        let contours = SelectionContours.make(from: outline)
         guard !contours.isEmpty else { brushError = "Select an area to fill with watercolor."; return }
-        let seed = brushSettings.naturalSeed ?? UInt64.random(in: 1...UInt64(UInt32.max))
+        let seed = explicitSeed ?? brushSettings.naturalSeed ?? UInt64.random(in: 1...UInt64(UInt32.max))
         let passes = WatercolorFill.passes(contours: contours, seed: seed)
         guard !passes.isEmpty else { return }
         let canvas = CGRect(origin: .zero, size: document.size)
-        let area = selection.coverageBounds.integral.intersection(canvas).integral.intersection(canvas)
+        let area = region.coverageBounds.integral.intersection(canvas).integral.intersection(canvas)
         guard area.width >= 1, area.height >= 1, area.width * area.height <= CGFloat(DocumentLimits.documentPixelBudget) else {
             brushError = ProjectError.tooLarge.localizedDescription
             return
         }
-        let ink = paletteColor(background: false)
+        let palette = paletteColor(background: false)
+        let ink = PaletteColor(red: red ?? palette.red, green: green ?? palette.green, blue: blue ?? palette.blue)
         finishOpacityEdit()
         isProjectBusy = true
         defer { isProjectBusy = false; cancelBrush() }
@@ -273,6 +282,7 @@ extension EditorSession {
             var settings = brushSettings
             settings.natural = .round
             let stroke = try makeRasterEdit(for: layer, settings: settings, growsMask: true)
+            if override != nil { stroke.selectionClip = try region.clip(canvas: document.size) }
             stroke.editName = "Watercolor Fill"
             guard area.width * area.height <= CGFloat(max(1, stroke.pixelLimit)) else { throw ProjectError.tooLarge }
             let buffer = try BrushRaster.context(width: Int(area.width), height: Int(area.height), mask: isMaskSelected)
@@ -291,19 +301,25 @@ extension EditorSession {
     }
 
     /// Hatches the selection with the current natural brush (HB when the tip is still Round).
+    /// `path` hatches that polygon instead of the current selection.
     @MainActor
-    func hatchSelection() async {
-        guard canEditPixels, let layer = activeLayer, let selection, !selection.isEmpty else {
+    func hatchSelection(path override: CGPath? = nil, angle: CGFloat = 45, spacing explicitSpacing: CGFloat? = nil, seed explicitSeed: UInt64? = nil) async {
+        let outline = override ?? selection?.path
+        guard canEditLayers, let document, let layer = activeLayer, layer.isGroup == false, layer.adjustment == nil,
+              let outline, !DocumentSelection(path: outline).isEmpty else {
             brushError = "Select an area to hatch."
             return
         }
-        let contours = SelectionContours.make(from: selection.path)
+        if override == nil {
+            guard canEditPixels else { brushError = "Select an area to hatch."; return }
+        }
+        let contours = SelectionContours.make(from: outline)
         guard !contours.isEmpty else { return }
         let kind: NaturalBrushKind = brushSettings.natural == .round ? .hb : brushSettings.natural
         let diameter = brushSettings.diameter
-        let spacing = max(4, diameter * 0.7)
-        let seed = brushSettings.naturalSeed ?? UInt64.random(in: 1...UInt64(UInt32.max))
-        let lines = NaturalHatch.lines(contours: contours, angle: 45, spacing: spacing, seed: seed, jitter: 0.12)
+        let spacing = explicitSpacing ?? max(4, diameter * 0.7)
+        let seed = explicitSeed ?? brushSettings.naturalSeed ?? UInt64.random(in: 1...UInt64(UInt32.max))
+        let lines = NaturalHatch.lines(contours: contours, angle: angle, spacing: spacing, seed: seed, jitter: 0.12)
         guard !lines.isEmpty, let preset = kind.preset else { return }
         let gain = NaturalBrushEngine.strokeGain(kind: kind, seed: seed)
         let heavy = max(preset.pressureMin, preset.pressureMax)
@@ -324,6 +340,7 @@ extension EditorSession {
             var settings = brushSettings
             settings.natural = .round
             let stroke = try makeRasterEdit(for: layer, settings: settings, growsMask: true)
+            if override != nil { stroke.selectionClip = try DocumentSelection(path: outline).clip(canvas: document.size) }
             stroke.editName = "\(kind.rawValue) Hatch"
             try stroke.stampDabs(dabs)
             guard !stroke.patches.isEmpty else { return }

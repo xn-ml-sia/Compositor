@@ -193,6 +193,12 @@ final class EditorSession {
     @ObservationIgnored var brushPointer: CGPoint?
     /// Tablet or Force Touch pressure for the point in progress. Nil is a mouse, and speed stands in.
     @ObservationIgnored var brushPointingPressure: CGFloat?
+    /// True while a stroke script is feeding the brush. Canvas clicks wait so they don't join the replay.
+    @ObservationIgnored var isReplayingStrokes = false
+    /// Save sets this so a script does not paint or advance its cursor while the package is being written.
+    @ObservationIgnored var isStrokeScriptPaused = false
+    /// The brush the open stroke script last asked for. Shared across appends, so a later line can stroke without repeating it.
+    @ObservationIgnored var strokeScriptBrush: StrokeScriptBrush?
     @ObservationIgnored var maskDistortPreviewCache: MaskDistortPreviewCache?
     /// The last rounded rectangle drawn for a transform in progress, by layer, with the size it was drawn at.
     @ObservationIgnored var shapeTransformPreviewCache: [UUID: (size: CGSize, image: CGImage)] = [:]

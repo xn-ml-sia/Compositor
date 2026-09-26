@@ -1590,7 +1590,7 @@ final class CanvasView: NSView {
         session.effectSelection = nil
         optionHeld = event.modifierFlags.contains(.option)
         window?.makeFirstResponder(self)
-        guard session.document != nil, !session.isProjectBusy, !session.isImporting else { return }
+        guard session.document != nil, !session.isProjectBusy, !session.isImporting, !session.isReplayingStrokes else { return }
         let point = convert(event.locationInWindow, from: nil)
         if session.filterEdit?.samplesWhiteBalance == true, !spaceHeld, let document = session.document {
             session.sampleCameraRawWhiteBalance(at: session.viewport.documentPoint(from: point, documentSize: document.size))

@@ -55,6 +55,10 @@ p5.brush simulates pressure from the finished length of a stroke. A drag in prog
 
 p5.brush's spacing is an absolute distance unless the whole library is scaled. Here spacing scales with Size, so a large charcoal is not hundreds of dabs per pixel. Spray's Size is the cloud diameter for the same reason: in p5.brush the cloud is `scatter × stroke weight` (often much wider than the weight) while the specks stay tiny.
 
+## Stroke playback
+
+An open project can be painted from outside the app. Append ops to `strokes.jsonl` and Compositor plays them through these brushes at drawing speed. See [Stroke playback](stroke-playback.md).
+
 ## License
 
 p5.brush is MIT licensed. The preset values, dab placement, watercolor growth, and hatch scanlines in this app are derived from that project:
