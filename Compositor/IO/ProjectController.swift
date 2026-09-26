@@ -184,6 +184,9 @@ final class ProjectController {
             panel.canCreateDirectories = true
             panel.isExtensionHidden = false
             panel.nameFieldStringValue = session.projectURL?.lastPathComponent ?? "Untitled.comp"
+            // Save As starts next to the project, not wherever the last panel was. Otherwise a quick
+            // Return saves a same-named copy in another folder and the original's cursor is rewound.
+            if let folder = session.projectURL?.deletingLastPathComponent() { panel.directoryURL = folder }
             panel.title = asNew ? "Save Project As" : "Save Project"
             let response: NSApplication.ModalResponse
             if let window { response = await panel.beginSheetModal(for: window) }
