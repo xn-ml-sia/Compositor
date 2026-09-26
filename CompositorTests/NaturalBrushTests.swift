@@ -192,6 +192,10 @@ struct NaturalBrushTests {
         #expect(bent.contains { abs($0.y - 80) > 0.5 })
         let hand = try #require(FlowField.make(name: "hand", wiggle: 2, seed: 1, canvas: canvas))
         #expect(hand.wiggle == 2)
+        // The hand field wobbles around zero like p5's simplex noise; it does not tilt every line one way.
+        let mean = hand.angles.reduce(0, +) / Float(hand.angles.count)
+        #expect(abs(mean) < 1.5)
+        #expect(hand.angles.contains { $0 > 2 } && hand.angles.contains { $0 < -2 })
         let custom = try #require(FlowField.make(name: "custom", wiggle: 1, seed: 1, canvas: canvas, columns: 2, rows: 2, angles: [0, 90, 10, 20]))
         #expect(custom.angles.count == 4)
     }
@@ -220,6 +224,13 @@ struct NaturalBrushTests {
         #expect(bent.count > flat.count)
         let round = ShapeGeometry.build(.circle(x: 50, y: 50, radius: 20, irregularity: 0.2), field: nil, seed: 4)
         #expect(round.samples.count > 10)
+        // A circle stays centred on (x, y) at about its radius, not a square beside it.
+        let distances = round.samples.map { hypot($0.x - 50, $0.y - 50) }
+        #expect(distances.allSatisfy { $0 > 14 && $0 < 26 })
+        let meanX = round.samples.map(\.x).reduce(0, +) / CGFloat(round.samples.count)
+        #expect(abs(meanX - 50) < 4)
+        let perfect = ShapeGeometry.build(.circle(x: 0, y: 0, radius: 30, irregularity: 0), field: nil, seed: 9)
+        #expect(perfect.samples.allSatisfy { abs(hypot($0.x, $0.y) - 30) < 0.01 })
         let box = ShapeGeometry.build(.rect(x: 0, y: 0, width: 10, height: 8, centered: false), field: nil, seed: 1)
         #expect(box.samples.count == 5)
         #expect(box.samples[2].x == 10 && box.samples[2].y == 8)

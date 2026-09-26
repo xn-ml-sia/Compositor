@@ -386,7 +386,9 @@ extension EditorSession {
             if let green = options.green { settings.green = green }
             if let blue = options.blue { settings.blue = blue }
             let stroke = try makeRasterEdit(for: layer, settings: settings, growsMask: true)
-            if override != nil { stroke.selectionClip = try DocumentSelection(path: outline).clip(canvas: document.size) }
+            // Continuous connectors run along the outline, so clipping to it would cut them in half.
+            // The chords already end on the outline; p5.brush does not clip a hatch either.
+            if override != nil, options.continuous == false { stroke.selectionClip = try DocumentSelection(path: outline).clip(canvas: document.size) }
             stroke.editName = "\(kind.rawValue) Hatch"
             try stroke.stampDabs(dabs)
             guard !stroke.patches.isEmpty else { return }

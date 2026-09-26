@@ -138,11 +138,15 @@ private func randInt(_ rng: inout NaturalRNG, _ low: Double, _ high: Double) -> 
 private func fillHand(_ field: inout FlowField, rng: inout NaturalRNG, time: Double) {
     let spread = rng.uniform(0.2, 0.8)
     let amount = Double(randInt(&rng, 5, 10))
+    let noiseSeed = UInt64(randInt(&rng, 0, 1_000_000))
     for column in 0..<field.columns {
         for row in 0..<field.rows {
             let phase = Double(randInt(&rng, 15, 25))
             let angle = 0.5 * amount * sind(spread * Double(row * column) + phase)
-            let value = 0.2 * angle * cosd(time) + Double(FlowNoise.value(CGFloat(column), seed: UInt64(bitPattern: Int64(row)) &+ 99)) * amount * 0.7
+            // p5's noise2 is simplex noise in -1…1, so the hand field wobbles without drifting.
+            // FlowNoise is 0…1; centring it keeps a line on its heading instead of tilting it.
+            let noise = 2 * Double(FlowNoise.value(CGFloat(column), seed: UInt64(bitPattern: Int64(row)) &+ 99 &+ noiseSeed &* 7919)) - 1
+            let value = 0.2 * angle * cosd(time) + noise * amount * 0.7
             field.angles[column * field.rows + row] = Float(value)
         }
     }

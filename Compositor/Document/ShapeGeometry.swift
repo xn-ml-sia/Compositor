@@ -1,8 +1,8 @@
 import CoreGraphics
 
 // Shape paths from p5.brush `src/core/primitives.js` (MIT, Alejandro Campos Uribe).
-// Curvature 0 is the polyline. A positive curvature fillets corners. Circles are four
-// tangential steps, lengthened when `r` is set. The active flow field bends the result.
+// Curvature 0 is the polyline. A positive curvature fillets corners. Circles are sampled
+// as a curve with a seeded wobble when `r` is set. The active flow field bends the result.
 
 enum ShapeGeometry {
     static func build(_ geometry: StrokeGeometry, field: FlowField?, seed: UInt64) -> (samples: [StrokeSample], polygon: [CGPoint]) {
@@ -87,22 +87,33 @@ enum ShapeGeometry {
         return (bent, polygon)
     }
 
+    /// p5.brush draws a circle as four curved quarter turns, each stretched by up to 20% of `r`,
+    /// so an irregular circle is lumpy and does not quite close. Straight `trace` steps would make
+    /// that a square, so the curve is sampled directly: a seeded start angle, a smooth periodic
+    /// wobble in the radius, and a short overlap past the start when `r` is set.
     private static func circle(x: CGFloat, y: CGFloat, radius: CGFloat, irregularity: CGFloat, seed: UInt64) -> [StrokeSample] {
+        guard radius > 0 else { return [] }
         var rng = NaturalRNG(seed: seed == 0 ? 1 : seed)
-        let offset = CGFloat(rng.uniform(0, 360))
-        let arc = CGFloat.pi * radius
-        var segments: [(CGFloat, CGFloat, CGFloat)] = []
-        for index in 0..<4 {
-            let angleScale = irregularity > 0 ? 1 + irregularity * 0.2 * CGFloat(rng.uniform(0, 1)) : 1
-            let lengthScale = irregularity > 0 ? 1 + irregularity * 0.2 * CGFloat(rng.uniform(0, 1)) : 1
-            segments.append(((-90 * CGFloat(index) + offset) * angleScale, (arc / 2) * lengthScale, 1))
+        let start = CGFloat(rng.uniform(0, 360)) * .pi / 180
+        let wobble = min(1, max(0, irregularity))
+        let harmonics: [(frequency: CGFloat, amount: CGFloat, phase: CGFloat)] = [(2, 0.10), (3, 0.06), (5, 0.03)].map {
+            ($0.0, $0.1 * wobble, CGFloat(rng.uniform(0, 2 * Double.pi)))
         }
-        if irregularity > 0 {
-            let extra = irregularity * CGFloat(Int(rng.uniform(-5, 5)))
-            segments.append((offset, abs(extra) * CGFloat.pi / 180 * radius, 1))
+        let overshoot = wobble > 0 ? CGFloat(rng.uniform(4, 24)) * wobble * .pi / 180 : 0
+        let drift = wobble > 0 ? CGFloat(rng.uniform(-0.05, 0.05)) * wobble : 0
+        let sweep = 2 * CGFloat.pi + overshoot
+        let count = min(720, max(24, Int((radius * sweep / 3).rounded(.up))))
+        var samples: [StrokeSample] = []
+        samples.reserveCapacity(count + 1)
+        for index in 0...count {
+            let t = CGFloat(index) / CGFloat(count)
+            let theta = start + sweep * t
+            var scale: CGFloat = 1 + drift * t
+            for harmonic in harmonics { scale += harmonic.amount * sin(harmonic.frequency * (theta - start) + harmonic.phase) - harmonic.amount * sin(harmonic.phase) }
+            let r = radius * max(0.2, scale)
+            samples.append(StrokeSample(x: x + r * cos(theta), y: y + r * sin(theta), pressure: 1, time: nil))
         }
-        let origin = CGPoint(x: x - radius * sin(offset * .pi / 180), y: y - radius * cos(-offset * .pi / 180))
-        return trace(from: origin, segments: segments, field: nil)
+        return samples
     }
 
     private static func rect(x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat, centered: Bool) -> [StrokeSample] {
