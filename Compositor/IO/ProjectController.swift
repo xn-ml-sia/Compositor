@@ -170,8 +170,13 @@ final class ProjectController {
 
     /// The document as it is now, and where it goes: asks with the Save panel when it has no file yet (or Save As).
     private func prepareSave(asNew: Bool) async -> (snapshot: ProjectSnapshot, destination: URL, revision: UUID)? {
+        // Hold the stroke script still so the snapshot and the cursor describe the same strokes.
+        await pauseStrokeScript()
         let revision = session.history.currentRevision
-        guard let snapshot = session.projectSnapshot() else { return nil }
+        guard let snapshot = session.projectSnapshot() else {
+            resumeStrokeScript()
+            return nil
+        }
         var destination = asNew ? nil : session.projectURL
         if destination == nil {
             let panel = NSSavePanel()
@@ -179,19 +184,30 @@ final class ProjectController {
             panel.canCreateDirectories = true
             panel.isExtensionHidden = false
             panel.nameFieldStringValue = session.projectURL?.lastPathComponent ?? "Untitled.comp"
+            // Save As starts next to the project, not wherever the last panel was. Otherwise a quick
+            // Return saves a same-named copy in another folder and the original's cursor is rewound.
+            if let folder = session.projectURL?.deletingLastPathComponent() { panel.directoryURL = folder }
             panel.title = asNew ? "Save Project As" : "Save Project"
             let response: NSApplication.ModalResponse
             if let window { response = await panel.beginSheetModal(for: window) }
             else { response = await panel.begin() }
-            guard response == .OK, let url = panel.url else { return nil }
+            guard response == .OK, let url = panel.url else {
+                resumeStrokeScript()
+                return nil
+            }
             destination = url
         }
-        guard let destination else { return nil }
+        guard let destination else {
+            resumeStrokeScript()
+            return nil
+        }
         return (snapshot, destination, revision)
     }
 
     /// Writes a captured document in the background. Only that captured version counts as saved.
     private func write(_ snapshot: ProjectSnapshot, to destination: URL, revision: UUID) async -> Bool {
+        let source = session.projectURL
+        let previousCursor = externalChanges.savedStrokeOffset
         let task = Task { @MainActor [self] () -> Bool in
             let scoped = destination.startAccessingSecurityScopedResource()
             defer { if scoped { destination.stopAccessingSecurityScopedResource() } }
@@ -199,11 +215,15 @@ final class ProjectController {
             externalChanges.saving = true
             defer { externalChanges.saving = false }
             do {
-                try await ProjectStore.shared.save(snapshot, to: destination)
+                try await ProjectStore.shared.save(snapshot, to: destination, preservingStrokeScriptFrom: source)
+                if let source, source.resolvingSymlinksInPath() != destination.resolvingSymlinksInPath() {
+                    StrokeScriptReader.storeCursor(previousCursor, in: source)
+                }
                 session.projectURL = destination
                 session.history.markSaved(revision)
                 saveGeneration += 1
                 RecentProjects.shared.note(destination)
+                externalChanges.savedStrokeOffset = StrokeScriptReader.rawCursor(in: destination)
                 await rememberProjectDigest(for: destination)
                 watchProject(at: destination)
                 return true
@@ -215,6 +235,7 @@ final class ProjectController {
         writing = task
         let saved = await task.value
         if writing == task { writing = nil }
+        resumeStrokeScript()
         return saved
     }
 
@@ -307,7 +328,33 @@ final class ProjectController {
         alert.addButton(withTitle: "Don’t Save")
         let response = await show(alert)
         if response == .alertFirstButtonReturn { return await saveCurrent() }
-        return response == .alertThirdButtonReturn
+        if response == .alertThirdButtonReturn {
+            rewindStrokeCursor()
+            return true
+        }
+        return false
+    }
+
+    /// Playback is between lines, and it will not start another until `resumeStrokeScript`.
+    private func pauseStrokeScript() async {
+        session.isStrokeScriptPaused = true
+        while session.isReplayingStrokes || externalChanges.strokeTask != nil {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+    }
+
+    private func resumeStrokeScript() {
+        guard session.isStrokeScriptPaused else { return }
+        session.isStrokeScriptPaused = false
+        noteStrokeScript()
+    }
+
+    /// Puts `strokes.cursor` back to the last save. The pixels are being discarded with it.
+    private func rewindStrokeCursor() {
+        guard let url = session.projectURL else { return }
+        let saved = externalChanges.savedStrokeOffset
+        guard StrokeScriptReader.rawCursor(in: url) != saved else { return }
+        StrokeScriptReader.storeCursor(saved, in: url)
     }
 
     private func showError(_ title: String, error: Error) async {

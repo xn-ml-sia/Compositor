@@ -11,15 +11,20 @@ import Foundation
 final class ProjectWatcher {
     let url: URL
     private let onChange: @MainActor () -> Void
+    /// Fires on the event, not after the quiet period. Stroke scripts are append-only and read their own cursor.
+    private let onStrokeScript: (@MainActor () -> Void)?
     private let sources = SourceBox()
     private var delivery: Task<Void, Never>?
     private var rearm: Task<Void, Never>?
+    /// Paths opened by the last `arm`. A new `strokes.jsonl` changes this, which is the moment it has to be watched.
+    private var armedPaths: [String] = []
     /// How long to wait after the last event before reporting, so a save that touches several files reports once.
     static let coalescing: Duration = .milliseconds(300)
 
-    init(url: URL, onChange: @escaping @MainActor () -> Void) {
+    init(url: URL, onChange: @escaping @MainActor () -> Void, onStrokeScript: (@MainActor () -> Void)? = nil) {
         self.url = url
         self.onChange = onChange
+        self.onStrokeScript = onStrokeScript
         arm()
     }
 
@@ -32,10 +37,14 @@ final class ProjectWatcher {
     }
 
     private var watchedPaths: [String] {
-        [url.path, url.appendingPathComponent("manifest.json").path, url.appendingPathComponent("images", isDirectory: true).path]
+        var paths = [url.path, url.appendingPathComponent("manifest.json").path, url.appendingPathComponent("images", isDirectory: true).path]
+        let script = url.appendingPathComponent(StrokeScriptReader.scriptName).path
+        if FileManager.default.fileExists(atPath: script) { paths.append(script) }
+        return paths
     }
 
     private func arm() {
+        armedPaths = watchedPaths
         sources.cancelAll()
         for path in watchedPaths {
             let descriptor = open(path, O_EVTONLY)
@@ -64,6 +73,11 @@ final class ProjectWatcher {
     }
 
     private func noteEvent() {
+        // A strokes.jsonl that was just created has to be watched before the next append, which does not
+        // touch the package directory again. Later appends already have a descriptor, so they are not re-armed
+        // here. The script is read immediately; the reload path still waits.
+        if watchedPaths != armedPaths { arm() }
+        onStrokeScript?()
         // Re-arm by path once the writer has finished swapping files, retrying briefly while the package
         // is mid-replacement and a path does not exist yet.
         rearm?.cancel()

@@ -9,7 +9,13 @@ extension ProjectController {
     /// every save, so the digest of the package on disk is always the one we last read or wrote.
     func watchProject(at url: URL) {
         guard url != externalChanges.watcher?.url else { return }
-        externalChanges.watcher = ProjectWatcher(url: url) { [weak self] in self?.noteExternalChange() }
+        externalChanges.strokeTask?.cancel()
+        externalChanges.strokeTask = nil
+        externalChanges.strokeDirty = false
+        externalChanges.savedStrokeOffset = StrokeScriptReader.rawCursor(in: url)
+        externalChanges.watcher = ProjectWatcher(url: url, onChange: { [weak self] in self?.noteExternalChange() },
+                                                 onStrokeScript: { [weak self] in self?.noteStrokeScript() })
+        noteStrokeScript()
     }
 
     func stopWatchingProject() {
@@ -18,6 +24,12 @@ extension ProjectController {
         externalChanges.recheck?.cancel()
         externalChanges.recheck = nil
         externalChanges.pending = false
+        externalChanges.strokeGeneration += 1
+        externalChanges.strokeTask?.cancel()
+        externalChanges.strokeTask = nil
+        externalChanges.strokeDirty = false
+        session.isStrokeScriptPaused = false
+        session.isReplayingStrokes = false
     }
 
     /// Remembers the package as it is now, so the next event compares against it.
@@ -109,4 +121,10 @@ final class ExternalChangeState {
     var recheckAttempt = 0
     /// Reloads performed because the package changed on disk. Read by tests.
     var reloadCount = 0
+    var strokeTask: Task<Void, Never>?
+    var strokeDirty = false
+    /// Bumped when a playback task starts and when watching stops, so a finishing task cannot clear the next one.
+    var strokeGeneration = 0
+    /// Byte offset last saved with the pixels. Don't Save writes this back so unsaved strokes play again.
+    var savedStrokeOffset = 0
 }

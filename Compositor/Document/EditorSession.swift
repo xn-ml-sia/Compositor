@@ -191,6 +191,17 @@ final class EditorSession {
     @ObservationIgnored var brushAnchor: CGPoint?
     /// The pointer itself, so a smoothed stroke can catch up to it when the button is released.
     @ObservationIgnored var brushPointer: CGPoint?
+    /// Tablet or Force Touch pressure for the point in progress. Nil is a mouse, and speed stands in.
+    @ObservationIgnored var brushPointingPressure: CGFloat?
+    /// True while a stroke script is feeding the brush. Canvas clicks wait so they don't join the replay.
+    @ObservationIgnored var isReplayingStrokes = false
+    /// True while the open brush stroke belongs to the stroke script. The pointer's drag and release must not
+    /// add points to it or finish it, or a click during playback draws a line from the stroke to the click.
+    @ObservationIgnored var isScriptedBrushStroke = false
+    /// Save sets this so a script does not paint or advance its cursor while the package is being written.
+    @ObservationIgnored var isStrokeScriptPaused = false
+    /// The brush the open stroke script last asked for. Shared across appends, so a later line can stroke without repeating it.
+    @ObservationIgnored var strokeScriptBrush: StrokeScriptBrush?
     @ObservationIgnored var maskDistortPreviewCache: MaskDistortPreviewCache?
     /// The last rounded rectangle drawn for a transform in progress, by layer, with the size it was drawn at.
     @ObservationIgnored var shapeTransformPreviewCache: [UUID: (size: CGSize, image: CGImage)] = [:]
@@ -203,6 +214,14 @@ final class EditorSession {
     /// The copies an Option-drag made, and what was selected before it, so Escape can take them away again.
     @ObservationIgnored var transformDuplicate: (copies: [UUID], source: Set<UUID>, primary: UUID?)?
     var brushSettings = BrushSettings() { didSet { refreshGradient() } }
+    /// Last watercolor settings from the Edit menu. A stroke script carries its own.
+    var watercolorOptions = WatercolorOptions()
+    var showWatercolorOptions = false
+    /// Active flow field for scripted strokes, hatch, shapes, and (when set from the brush bar) live drags.
+    var flowField: FlowField?
+    var flowWiggle: CGFloat = 1
+    var hatchOptions = HatchOptions()
+    var showHatchOptions = false
     var spotHealingMode: SpotHealingMode = .contentAware
     var blurMode: BlurToolMode = .liquify
     /// The Brush's two modes: Paint lays down the foreground color, Erase clears pixels away (B and E).

@@ -46,6 +46,8 @@ brew install --cask robbietilton-compositor
 
 ### Painting and retouching
 - Brush with size, hardness, opacity and smoothing, in Paint or Erase mode (B and E), and Shift for straight lines
+- Natural-media brushes ported from [p5.brush](https://github.com/acamposuribe/p5.brush) (MIT, Alejandro Campos Uribe): pencils, charcoal, pastel, crayon, marker, pen, and spray, with tablet pressure, plus watercolor fill and hatch of a selection. See [Natural brushes](docs/natural-brushes.md)
+- Stroke playback: append `strokes.jsonl` to an open project and the app paints each line through that brush, live, as its own undo step. See [Stroke playback](docs/stroke-playback.md)
 - Spot Healing Brush (content-aware)
 - Clone Stamp, aligned or not, sampling one layer or all of them
 - Blur tool, on pixels or masks

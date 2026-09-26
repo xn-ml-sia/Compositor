@@ -8,6 +8,9 @@ import Foundation
 /// Assets are not read: every save and open takes a fresh digest, and hashing every image of a large project would
 /// hold each save for seconds. Anything that edits a project rewrites its manifest, and a PNG whose pixels change
 /// all but always changes size, so names and sizes catch the rest from the file system alone.
+///
+/// `strokes.jsonl` and `strokes.cursor` are omitted. A stroke script is played into the open document, and hashing
+/// it would reload the project and throw away undo.
 nonisolated struct ProjectDigest: Equatable, Sendable {
     let value: Data
 

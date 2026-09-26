@@ -11,6 +11,23 @@ struct BrushControls: View {
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
                 .help("Paint with the foreground color (B), or erase pixels away (E)")
+                Picker("Brush", selection: $session.brushSettings.natural) {
+                    ForEach(NaturalBrushKind.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.menu).fixedSize()
+                .help("Round is the smooth tip. The others are natural-media brushes ported from p5.brush. A tablet uses pen pressure; a mouse uses speed.")
+                Picker("Field", selection: Binding(get: { session.flowField?.name ?? "none" }, set: { session.applyFlowField(name: $0, wiggle: session.flowWiggle, seed: 1) })) {
+                    Text("None").tag("none")
+                    ForEach(FlowField.builtInNames, id: \.self) { Text($0.capitalized).tag($0) }
+                }
+                .pickerStyle(.menu).fixedSize()
+                .help("Steers live strokes along a p5.brush flow field. None leaves the pointer alone.")
+                if session.brushSettings.natural != .round {
+                    Text("Wiggle")
+                        .scrubbable(sensitivity: 0.02, value: $session.brushSettings.wiggle, range: 0...2)
+                    Slider(value: $session.brushSettings.wiggle, in: 0...2).frame(width: 72)
+                        .help("Pushes the stroke off the pointer, like p5.brush's flow-field wiggle. 0 stays on the line.")
+                }
             }
             if session.tool == .blur {
                 Picker("Mode", selection: $session.blurMode) {

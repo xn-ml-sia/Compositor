@@ -13,6 +13,8 @@ struct ContentView: View {
     @State private var selectionAmountPanel = FloatingPanelController(name: "selectionAmountPanel")
     @State private var filterPanel = FloatingPanelController(name: "filterPanel")
     @State private var effectsPanel = FloatingPanelController(name: "effectsPanel")
+    @State private var watercolorPanel = FloatingPanelController(name: "watercolorPanel")
+    @State private var hatchPanel = FloatingPanelController(name: "hatchPanel")
     @State private var isDropTargeted = false
     /// The window's width, so the tab strip can use the toolbar's free space.
     @State private var windowWidth: CGFloat = 1180
@@ -231,6 +233,18 @@ struct ContentView: View {
                 selectionAmountPanel.show(title: operation.rawValue + " Selection",
                     content: SelectionAmountSheet(session: session, operation: operation))
             } else { selectionAmountPanel.close() }
+        }
+        .onChange(of: session.showWatercolorOptions) { _, show in
+            if show {
+                watercolorPanel.onClose = { session.showWatercolorOptions = false }
+                watercolorPanel.show(title: "Watercolor Fill", content: WatercolorOptionsSheet(session: session))
+            } else { watercolorPanel.close() }
+        }
+        .onChange(of: session.showHatchOptions) { _, show in
+            if show {
+                hatchPanel.onClose = { session.showHatchOptions = false }
+                hatchPanel.show(title: "Hatch", content: HatchOptionsSheet(session: session))
+            } else { hatchPanel.close() }
         }
         .onChange(of: session.filterEdit == nil) { _, closed in
             if closed { filterPanel.close() }

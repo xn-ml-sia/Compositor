@@ -1575,11 +1575,22 @@ final class CanvasView: NSView {
         brushPointer = convert(event.locationInWindow, from: nil)
         updateBrushCursor()
     }
+    /// Tablet point events carry a real pressure. A plain mouse button is 0 or 1; values strictly
+    /// between those come from Force Touch and are treated as pressure too. Nil falls back to speed.
+    private func pointingPressure(_ event: NSEvent) -> CGFloat? {
+        if event.subtype == NSEvent.EventSubtype.tabletPoint {
+            let pressure = min(Float(1), max(Float(0), event.pressure))
+            return CGFloat(pressure)
+        }
+        let pressure = CGFloat(event.pressure)
+        if pressure > 0.02 && pressure < 0.98 { return pressure }
+        return nil
+    }
     override func mouseDown(with event: NSEvent) {
         session.effectSelection = nil
         optionHeld = event.modifierFlags.contains(.option)
         window?.makeFirstResponder(self)
-        guard session.document != nil, !session.isProjectBusy, !session.isImporting else { return }
+        guard session.document != nil, !session.isProjectBusy, !session.isImporting, !session.isReplayingStrokes else { return }
         let point = convert(event.locationInWindow, from: nil)
         if session.filterEdit?.samplesWhiteBalance == true, !spaceHeld, let document = session.document {
             session.sampleCameraRawWhiteBalance(at: session.viewport.documentPoint(from: point, documentSize: document.size))
@@ -1644,10 +1655,10 @@ final class CanvasView: NSView {
             brushPointer = point
             // Shift paints a straight line on from where the last stroke ended, as in Photoshop.
             if event.modifierFlags.contains(.shift), let from = session.shiftLineStart() {
-                session.beginBrush(at: from)
-                session.continueBrush(at: pixel)
+                session.beginBrush(at: from, pressure: pointingPressure(event))
+                session.continueBrush(at: pixel, pressure: pointingPressure(event))
             } else {
-                session.beginBrush(at: pixel)
+                session.beginBrush(at: pixel, pressure: pointingPressure(event))
             }
             brushAxisAnchor = event.modifierFlags.contains(.shift) ? pixel : nil
             brushAxisHorizontal = nil
@@ -1744,7 +1755,7 @@ final class CanvasView: NSView {
         }
         brushPointer = point
         updateBrushCursor()
-        if session.brushStroke != nil || session.warpStroke != nil, !session.isProjectBusy, let document = session.document {
+        if session.brushStroke != nil || session.warpStroke != nil, !session.isProjectBusy, !session.isScriptedBrushStroke, let document = session.document {
             var pixel = session.viewport.documentPoint(from: point, documentSize: document.size)
             // Shift keeps the stroke straight, horizontal or vertical, from wherever it was pressed; letting go carries
             // on freehand. The axis is settled by the first few pixels of movement, so it doesn't flip mid-line.
@@ -1764,7 +1775,7 @@ final class CanvasView: NSView {
                 brushAxisHorizontal = nil
             }
             brushLastPixel = pixel
-            session.continueBrush(at: pixel)
+            session.continueBrush(at: pixel, pressure: pointingPressure(event))
             synchronizeDisplay()
             return
         }
@@ -1867,9 +1878,9 @@ final class CanvasView: NSView {
             if session.colorPicker != nil { ColorPickerPanelController.refocus() }
             return
         }
-        if session.brushStroke != nil || session.warpStroke != nil, !session.isProjectBusy {
+        if session.brushStroke != nil || session.warpStroke != nil, !session.isProjectBusy, !session.isScriptedBrushStroke {
             if let document = session.document {
-                session.continueBrush(at: session.viewport.documentPoint(from: convert(event.locationInWindow, from: nil), documentSize: document.size))
+                session.continueBrush(at: session.viewport.documentPoint(from: convert(event.locationInWindow, from: nil), documentSize: document.size), pressure: pointingPressure(event))
             }
             session.finishBrushImmediately()
             synchronizeDisplay()

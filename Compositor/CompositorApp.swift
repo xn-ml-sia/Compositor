@@ -202,6 +202,12 @@ struct CompositorApp: App {
                         .disabled(session.selection == nil || !session.canEditPixels)
                     Button("Content-Aware Fill…") { session.beginFilter(.contentAwareFill) }
                         .configuredKeyboardShortcut(.delete, modifiers: .shift).disabled(!session.canContentAwareFill)
+                    Button("Watercolor Fill Selection") { session.showWatercolorOptions = true }
+                        .disabled(session.selection?.isEmpty != false || !session.canEditPixels)
+                        .help("A watercolor wash of the selection, ported from p5.brush")
+                    Button("Hatch Selection") { session.showHatchOptions = true }
+                        .disabled(session.selection?.isEmpty != false || !session.canEditPixels)
+                        .help("Hatches the selection with the current natural brush")
                 }
                 CommandMenu("Select") {
                     // A field being edited keeps its own Select All: offer it to the responder chain

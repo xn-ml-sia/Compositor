@@ -130,6 +130,18 @@ An adjustment layer has an `adjustment` object and no `imageFile`, and it affect
 - For Hue/Saturation, set `hue`, `saturation` and `lightness` on the adjustment itself. Color Balance takes a `colorBalanceSettings` object (`shadowCyanRed`, `shadowMagentaGreen`, `shadowYellowBlue`, and the same for `mid` and `highlight`, each −100 to 100, plus `preserveLuminosity`).
 - For the other kinds, the easiest way to get the exact shape is to add one in Compositor, save, and copy it from that project's manifest.
 
+## Painting stroke by stroke
+
+Appending to `manifest.json` reloads the whole project and clears undo. To paint with the brushes instead, append lines to `strokes.jsonl` in the package. The open app plays each line through the real brush, at drawing speed, as its own undo step. It does not reload the project. The format, the cursor file, and a flower script are in [Stroke playback](stroke-playback.md).
+
+```json
+{"op":"layer","name":"Petals"}
+{"op":"brush","preset":"HB","diameter":22,"color":[0.1,0.2,0.9],"layer":"Petals"}
+{"op":"stroke","layer":"Petals","seed":42,"points":[[12,40],[80,36],[140,48]]}
+```
+
+`scripts/paint_flower.py` writes a longer example. Keep the file append-only, one JSON object per line, and leave `strokes.cursor` for the app. Saving keeps the script in the package. Don't Save rewinds the cursor to the last save.
+
 ## More
 
 - Folders, text layers, layer effects and everything else the format holds: [project-format.md](project-format.md).

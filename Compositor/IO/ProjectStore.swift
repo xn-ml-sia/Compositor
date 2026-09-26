@@ -81,7 +81,11 @@ actor ProjectStore {
         let version: Int
     }
 
-    func save(_ snapshot: ProjectSnapshot, to url: URL) throws {
+    /// `preservingStrokeScriptFrom` is the package whose `strokes.jsonl` and `strokes.cursor` are copied
+    /// into the replacement. Nil reads them from `url`. The atomic write would otherwise drop both.
+    /// They are read inside the coordinated write, after the images are encoded, so an append during
+    /// encoding is still kept.
+    func save(_ snapshot: ProjectSnapshot, to url: URL, preservingStrokeScriptFrom source: URL? = nil) throws {
         try validate(snapshot.manifest)
         var images: [String: FileWrapper] = [:]
         var pixels = 0, maskPixels = 0
@@ -109,17 +113,24 @@ actor ProjectStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let metadata = try encoder.encode(snapshot.manifest)
         guard metadata.count <= 4 * 1024 * 1024 else { throw ProjectError.tooLarge }
-        let package = FileWrapper(directoryWithFileWrappers: [
-            "manifest.json": FileWrapper(regularFileWithContents: metadata),
-            "images": FileWrapper(directoryWithFileWrappers: images)
-        ])
+        let manifestFile = FileWrapper(regularFileWithContents: metadata)
+        let imageFiles = FileWrapper(directoryWithFileWrappers: images)
         var coordinationError: NSError?
         var writeError: Error?
+        let scriptSource = source
         NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing, error: &coordinationError) { destination in
             do {
+                var files = ["manifest.json": manifestFile, "images": imageFiles]
+                let base = scriptSource ?? destination
+                if let script = try? Data(contentsOf: base.appendingPathComponent("strokes.jsonl")), !script.isEmpty {
+                    files["strokes.jsonl"] = FileWrapper(regularFileWithContents: script)
+                }
+                if let cursor = try? Data(contentsOf: base.appendingPathComponent("strokes.cursor")), !cursor.isEmpty {
+                    files["strokes.cursor"] = FileWrapper(regularFileWithContents: cursor)
+                }
                 // Foundation stages a sibling package and atomically replaces the
                 // destination only once the complete package has been written.
-                try package.write(to: destination, options: .atomic, originalContentsURL: nil)
+                try FileWrapper(directoryWithFileWrappers: files).write(to: destination, options: .atomic, originalContentsURL: nil)
             } catch { writeError = error }
         }
         if let error = coordinationError ?? writeError as NSError? { throw error }
