@@ -187,9 +187,11 @@ enum WatercolorFill {
         let ink = 2 * intensity * (1 + options.texture / 2)
         let textureScale = options.texture * 3
         let darkerFactor = CGFloat(rng.uniform(0.15, 0.7))
+        let base = poly
         poly = grow(poly, factor: 1, rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward)
+        // fill.js scatters the ungrown polygon (`this.scatter`), not the first growth.
         let sparse: Poly? = options.scatter
-            ? flip(scatter(grow(scatter(poly, ratio: 0.1, rng: &rng), factor: 1, rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward), ratio: 0.75, rng: &rng))
+            ? flip(scatter(grow(scatter(base, ratio: 0.1, rng: &rng), factor: 1, rng: &rng, poolA: poolA, poolB: poolB, bleed: strength, outward: options.outward), ratio: 0.75, rng: &rng))
             : nil
         let layers = 20
         var passes: [WatercolorPass] = []
@@ -291,15 +293,23 @@ enum WatercolorFill {
         return marks
     }
 
+    /// One growth step, after fill.js `grow`. Each side gets a new vertex pushed off it by a Gaussian
+    /// share of the side's own length, so a long side makes a big tooth. fill.js leans on its inputs
+    /// having similar sides; ours do not (an arc's chord, a trim bridge, the sparse layer's 30 wide
+    /// sides), and a fixed polygon regrown twenty times at exact midpoints stacked the same tooth in
+    /// the same place until it read as a row of triangles. So sides longer than `maxSide` are split
+    /// first, the new vertex lands at a random point along its piece, and the push and its angle vary
+    /// per vertex. The fringe comes out soft and irregular instead of regular.
     private static func grow(_ poly: Poly, factor: CGFloat, rng: inout NaturalRNG, poolA: [CGFloat], poolB: [CGFloat], bleed: CGFloat, outward: Bool) -> Poly {
         let trimmed = trim(poly, factor: factor, rng: &rng)
         let len = trimmed.v.count
         guard len >= 3 else { return trimmed }
         let bleedDir: CGFloat = outward ? -90 : 90
+        let maxSide = max(3, max(trimmed.sizeX, trimmed.sizeY) * 0.05)
         var vertices: [CGPoint] = []
         var modifiers: [CGFloat] = []
         var dirs: [Bool] = []
-        vertices.reserveCapacity(min(800, len * 2))
+        vertices.reserveCapacity(min(1200, len * 3))
         for index in 0..<len {
             let current = trimmed.v[index]
             let next = trimmed.v[(index + 1) % len]
@@ -307,29 +317,45 @@ enum WatercolorFill {
             let flag = trimmed.dir[index]
             var mod = factor == 999 ? CGFloat(rng.uniform(0.6, 0.8)) : bleed
             if factor < 997 { mod = mine }
-            vertices.append(current)
-            modifiers.append(mine)
-            dirs.append(flag)
-            let sideX = next.x - current.x, sideY = next.y - current.y
-            if mod < 0.05 {
-                vertices.append(CGPoint(x: current.x + sideX * 0.5, y: current.y + sideY * 0.5))
+            let fullX = next.x - current.x, fullY = next.y - current.y
+            // Only the big pushes (999's 0.6…0.8, a trim bridge's 0.3…0.5) make teeth worth splitting.
+            // A bleed-sized push keeps fill.js's one vertex per side, so the wash still spreads as far.
+            let pieces = mod > 0.2 ? min(12, max(1, Int((hypot(fullX, fullY) / maxSide).rounded(.up)))) : 1
+            // Each piece pushes by more than its own share, so a split side still roughens, just in
+            // several smaller, uneven bumps instead of one big triangle.
+            let reach = pow(CGFloat(pieces), 0.3)
+            // Uneven split points, so the bumps along one side are not evenly spaced either.
+            var cuts: [CGFloat] = [0]
+            for piece in 1..<max(pieces, 1) { cuts.append((CGFloat(piece) + CGFloat(rng.uniform(-0.35, 0.35))) / CGFloat(pieces)) }
+            cuts.append(1)
+            for piece in 0..<pieces {
+                let t0 = cuts[piece], t1 = cuts[piece + 1]
+                let start = CGPoint(x: current.x + fullX * t0, y: current.y + fullY * t0)
+                let sideX = fullX * (t1 - t0), sideY = fullY * (t1 - t0)
+                vertices.append(start)
                 modifiers.append(mine)
                 dirs.append(flag)
-                continue
+                if mod < 0.05 {
+                    vertices.append(CGPoint(x: start.x + sideX * 0.5, y: start.y + sideY * 0.5))
+                    modifiers.append(mine)
+                    dirs.append(flag)
+                    continue
+                }
+                let rot = (flag ? bleedDir : -bleedDir) + CGFloat(rng.uniform(-1, 1)) * 12
+                let radians = rot * CGFloat.pi / 180
+                let c = cos(radians), s = sin(radians)
+                let dirX = c * sideX + s * sideY
+                let dirY = c * sideY - s * sideX
+                let sample = poolA[Int(rng.uniform(0, 1) * Double(poolA.count)) % poolA.count]
+                let distance = max(0, sample) * CGFloat(rng.uniform(pieces > 1 ? 0.05 : 0.35, pieces > 1 ? 1.6 : 1.45)) * mod * reach
+                let along = CGFloat(rng.uniform(0.3, 0.7))
+                let nextMod = mine + poolB[Int(rng.uniform(0, 1) * Double(poolB.count)) % poolB.count]
+                vertices.append(CGPoint(x: start.x + sideX * along + dirX * distance, y: start.y + sideY * along + dirY * distance))
+                modifiers.append(nextMod)
+                dirs.append(flag)
             }
-            let rot = (flag ? bleedDir : -bleedDir) + CGFloat(rng.uniform(-1, 1)) * 5
-            let radians = rot * CGFloat.pi / 180
-            let c = cos(radians), s = sin(radians)
-            let dirX = c * sideX + s * sideY
-            let dirY = c * sideY - s * sideX
-            let sample = poolA[Int(rng.uniform(0, 1) * Double(poolA.count)) % poolA.count]
-            let distance = sample * CGFloat(rng.uniform(0.65, 1.35)) * mod
-            let nextMod = mine + poolB[Int(rng.uniform(0, 1) * Double(poolB.count)) % poolB.count]
-            vertices.append(CGPoint(x: current.x + sideX * 0.5 + dirX * distance, y: current.y + sideY * 0.5 + dirY * distance))
-            modifiers.append(nextMod)
-            dirs.append(flag)
         }
-        return cap(Poly(v: vertices, m: modifiers, dir: dirs, center: trimmed.center, sizeX: trimmed.sizeX, sizeY: trimmed.sizeY), limit: 480)
+        return cap(Poly(v: vertices, m: modifiers, dir: dirs, center: trimmed.center, sizeX: trimmed.sizeX, sizeY: trimmed.sizeY), limit: 480, rng: &rng)
     }
 
     private static func trim(_ poly: Poly, factor: CGFloat, rng: inout NaturalRNG) -> Poly {
@@ -399,18 +425,25 @@ enum WatercolorFill {
         return copy
     }
 
-    private static func cap(_ poly: Poly, limit: Int) -> Poly {
-        guard poly.v.count > limit, limit >= 3 else { return poly }
-        let step = Int((CGFloat(poly.v.count) / CGFloat(limit)).rounded(.up))
+    /// Thins a polygon to `limit` vertices. A fixed stride of 2 would keep only the even (old) vertices
+    /// and throw away every grown one, so a dense outline would never grow at all. A jittered stride
+    /// keeps a mix, in order.
+    private static func cap(_ poly: Poly, limit: Int, rng: inout NaturalRNG) -> Poly {
+        let count = poly.v.count
+        guard count > limit, limit >= 3 else { return poly }
+        let step = CGFloat(count) / CGFloat(limit)
         var vertices: [CGPoint] = []
         var modifiers: [CGFloat] = []
         var dirs: [Bool] = []
-        var index = 0
-        while index < poly.v.count {
-            vertices.append(poly.v[index])
-            modifiers.append(poly.m[index])
-            dirs.append(poly.dir[index])
-            index += step
+        vertices.reserveCapacity(limit)
+        var last = -1
+        for index in 0..<limit {
+            let source = min(count - 1, Int(CGFloat(index) * step + CGFloat(rng.uniform(0, Double(step * 0.9)))))
+            guard source > last else { continue }
+            last = source
+            vertices.append(poly.v[source])
+            modifiers.append(poly.m[source])
+            dirs.append(poly.dir[source])
         }
         return Poly(v: vertices, m: modifiers, dir: dirs, center: poly.center, sizeX: poly.sizeX, sizeY: poly.sizeY)
     }

@@ -200,6 +200,37 @@ struct NaturalBrushTests {
         #expect(custom.angles.count == 4)
     }
 
+    @Test func aWashFringeHasNoLongStraightTeeth() {
+        // An arc (a long chord beside short arc sides) and a dense circle used to grow single
+        // triangles on 35–80 px sides: the regular sawtooth along a fill's edge. Every drawn
+        // polygon now stays in short, uneven pieces.
+        var arc: [CGPoint] = []
+        for index in 0...32 {
+            let radians = (200 + 140 * CGFloat(index) / 32) * .pi / 180
+            arc.append(CGPoint(x: 200 + 140 * cos(radians), y: 150 - 140 * sin(radians)))
+        }
+        var circle: [CGPoint] = []
+        for index in 0..<160 {
+            let radians = CGFloat(index) / 160 * 2 * .pi
+            circle.append(CGPoint(x: 550 + 140 * cos(radians), y: 200 + 140 * sin(radians)))
+        }
+        for contour in [arc, circle] {
+            for seed in [UInt64(1), 7, 62] {
+                let passes = WatercolorFill.passes(contours: [contour], seed: seed, options: WatercolorOptions(bleed: 0.08))
+                var longest: CGFloat = 0
+                for pass in passes {
+                    for polygon in pass.polygons + pass.darker + pass.scatterPolygons where polygon.count > 2 {
+                        for index in polygon.indices {
+                            let a = polygon[index], b = polygon[(index + 1) % polygon.count]
+                            longest = max(longest, hypot(b.x - a.x, b.y - a.y))
+                        }
+                    }
+                }
+                #expect(longest < 42, "seed \(seed): longest side \(longest)")
+            }
+        }
+    }
+
     @Test func retintPutsAFaintWashBackOnItsInk() throws {
         let context = try BrushRaster.context(width: 4, height: 1, mask: false)
         let pixels = try #require(context.data).bindMemory(to: UInt8.self, capacity: 16)
