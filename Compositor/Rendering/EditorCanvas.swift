@@ -1755,7 +1755,7 @@ final class CanvasView: NSView {
         }
         brushPointer = point
         updateBrushCursor()
-        if session.brushStroke != nil || session.warpStroke != nil, !session.isProjectBusy, let document = session.document {
+        if session.brushStroke != nil || session.warpStroke != nil, !session.isProjectBusy, !session.isScriptedBrushStroke, let document = session.document {
             var pixel = session.viewport.documentPoint(from: point, documentSize: document.size)
             // Shift keeps the stroke straight, horizontal or vertical, from wherever it was pressed; letting go carries
             // on freehand. The axis is settled by the first few pixels of movement, so it doesn't flip mid-line.
@@ -1878,7 +1878,7 @@ final class CanvasView: NSView {
             if session.colorPicker != nil { ColorPickerPanelController.refocus() }
             return
         }
-        if session.brushStroke != nil || session.warpStroke != nil, !session.isProjectBusy {
+        if session.brushStroke != nil || session.warpStroke != nil, !session.isProjectBusy, !session.isScriptedBrushStroke {
             if let document = session.document {
                 session.continueBrush(at: session.viewport.documentPoint(from: convert(event.locationInWindow, from: nil), documentSize: document.size), pressure: pointingPressure(event))
             }

@@ -195,6 +195,9 @@ final class EditorSession {
     @ObservationIgnored var brushPointingPressure: CGFloat?
     /// True while a stroke script is feeding the brush. Canvas clicks wait so they don't join the replay.
     @ObservationIgnored var isReplayingStrokes = false
+    /// True while the open brush stroke belongs to the stroke script. The pointer's drag and release must not
+    /// add points to it or finish it, or a click during playback draws a line from the stroke to the click.
+    @ObservationIgnored var isScriptedBrushStroke = false
     /// Save sets this so a script does not paint or advance its cursor while the package is being written.
     @ObservationIgnored var isStrokeScriptPaused = false
     /// The brush the open stroke script last asked for. Shared across appends, so a later line can stroke without repeating it.

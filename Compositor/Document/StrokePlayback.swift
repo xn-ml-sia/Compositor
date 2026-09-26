@@ -138,6 +138,7 @@ extension EditorSession {
         defer {
             // Finish while smoothing is still off, so the stroke does not chase the last point a second time.
             if started, brushStroke != nil { finishBrushImmediately() }
+            isScriptedBrushStroke = false
             brushSettings.smoothing = savedSmoothing
             brushSettings.naturalSeed = nil
         }
@@ -162,6 +163,7 @@ extension EditorSession {
                     return true
                 }
                 started = true
+                isScriptedBrushStroke = true
             } else {
                 continueBrush(at: point, pressure: sample.pressure)
             }
