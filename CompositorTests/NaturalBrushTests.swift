@@ -251,6 +251,40 @@ struct NaturalBrushTests {
         #expect(total / CGFloat(seeds.count) > 5)
     }
 
+    @Test func aThinWashBleedsInProportionToItsThickness() {
+        // A 410 × 44 rim ellipse used to haze up to 110 px above and below: its long sides (and the
+        // sparse layer's 6 wide sides) were pushed by a share of their length. The bleed now scales
+        // with the shape's thickness, so the paint stays within about half the rim's height of it.
+        var rim: [CGPoint] = []
+        for index in 0..<64 {
+            let radians = CGFloat(index) / 64 * 2 * .pi
+            rim.append(CGPoint(x: 300 + 205 * cos(radians), y: 200 + 22 * sin(radians)))
+        }
+        var worst: CGFloat = 0
+        var total: CGFloat = 0
+        let seeds: [UInt64] = [1, 7, 21, 44, 90]
+        for seed in seeds {
+            var reach: CGFloat = 0
+            for pass in WatercolorFill.passes(contours: [rim], seed: seed, options: WatercolorOptions()) {
+                for polygon in pass.polygons + pass.darker + pass.scatterPolygons {
+                    for point in polygon { reach = max(reach, abs(point.y - 200) - 22) }
+                }
+            }
+            worst = max(worst, reach)
+            total += reach
+        }
+        #expect(worst < 26, "worst vertical reach \(worst)")  // 112 px before the limit
+        #expect(total / CGFloat(seeds.count) > 2, "a thin wash still bleeds a little")
+        #expect(WatercolorFill.bleedReach(rim) < 24)
+        // A round wash keeps its reach: the limit is about half its radius.
+        var circle: [CGPoint] = []
+        for index in 0..<48 {
+            let radians = CGFloat(index) / 48 * 2 * .pi
+            circle.append(CGPoint(x: 100 + 80 * cos(radians), y: 100 + 80 * sin(radians)))
+        }
+        #expect(WatercolorFill.bleedReach(circle) > 45)
+    }
+
     @Test func retintPutsAFaintWashBackOnItsInk() throws {
         let context = try BrushRaster.context(width: 4, height: 1, mask: false)
         let pixels = try #require(context.data).bindMemory(to: UInt8.self, capacity: 16)

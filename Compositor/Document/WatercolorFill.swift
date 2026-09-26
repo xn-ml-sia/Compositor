@@ -138,6 +138,10 @@ enum WatercolorFill {
         var center: CGPoint
         var sizeX: CGFloat
         var sizeY: CGFloat
+        /// The farthest one growth step may push a vertex off its side. fill.js pushes by a share of
+        /// the side's own length, which is proportionate on a round blob but lets the long sides of a
+        /// flat shape (a bowl's rim, a branch) haze far past its short dimension.
+        var reach: CGFloat
     }
 
     /// Twenty washes, the count p5.brush paints. `bleed`, `texture`, and `border` keep the old argument names.
@@ -182,7 +186,7 @@ enum WatercolorFill {
         }
         guard max(maxX, maxY) > 0.5 else { return [] }
         let jittered = CGPoint(x: center.x + CGFloat(rng.uniform(-0.6, 0.6)) * maxX, y: center.y + CGFloat(rng.uniform(-0.6, 0.6)) * maxY)
-        var poly = Poly(v: shifted, m: modifiers, dir: flags, center: jittered, sizeX: maxX, sizeY: maxY)
+        var poly = Poly(v: shifted, m: modifiers, dir: flags, center: jittered, sizeX: maxX, sizeY: maxY, reach: bleedReach(contour))
         let intensity = min(1, max(0, options.opacity / 255))
         let ink = 2 * intensity * (1 + options.texture / 2)
         let textureScale = options.texture * 3
@@ -333,7 +337,8 @@ enum WatercolorFill {
             let radians = rot * CGFloat.pi / 180
             let c = cos(radians), s = sin(radians)
             let sample = poolA[Int(rng.uniform(0, 1) * Double(poolA.count)) % poolA.count]
-            let push = max(0, sample) * CGFloat(rng.uniform(0.65, 1.35)) * mod
+            var push = max(0, sample) * CGFloat(rng.uniform(0.65, 1.35)) * mod
+            if push * fullLength > trimmed.reach { push = trimmed.reach / max(fullLength, 1e-6) }
             // Only the big pushes (999's 0.6…0.8, a trim bridge's 0.3…0.5) on long sides make teeth.
             // A bleed-sized push keeps fill.js's single vertex per side.
             let pieces = mod > 0.2 ? min(12, max(1, Int((fullLength / maxSide).rounded(.up)))) : 1
@@ -377,7 +382,7 @@ enum WatercolorFill {
                 dirs.append(flag)
             }
         }
-        return cap(Poly(v: vertices, m: modifiers, dir: dirs, center: trimmed.center, sizeX: trimmed.sizeX, sizeY: trimmed.sizeY), limit: 480, rng: &rng)
+        return cap(Poly(v: vertices, m: modifiers, dir: dirs, center: trimmed.center, sizeX: trimmed.sizeX, sizeY: trimmed.sizeY, reach: trimmed.reach), limit: 480, rng: &rng)
     }
 
     private static func trim(_ poly: Poly, factor: CGFloat, rng: inout NaturalRNG) -> Poly {
@@ -401,7 +406,7 @@ enum WatercolorFill {
             modifiers.append(contentsOf: poly.m[0..<start])
             dirs.append(contentsOf: poly.dir[0..<start])
         }
-        let jitter = edge * 0.06
+        let jitter = min(edge * 0.06, poly.reach * 0.5)
         let flag = poly.dir[start % poly.dir.count]
         for step in 1...insert {
             let t = CGFloat(step) / CGFloat(insert + 1)
@@ -416,7 +421,7 @@ enum WatercolorFill {
             dirs.append(contentsOf: poly.dir[end...])
         }
         guard vertices.count >= 3 else { return poly }
-        return Poly(v: vertices, m: modifiers, dir: dirs, center: poly.center, sizeX: poly.sizeX, sizeY: poly.sizeY)
+        return Poly(v: vertices, m: modifiers, dir: dirs, center: poly.center, sizeX: poly.sizeX, sizeY: poly.sizeY, reach: poly.reach)
     }
 
     private static func scatter(_ poly: Poly, ratio: CGFloat, rng: inout NaturalRNG) -> Poly {
@@ -438,7 +443,7 @@ enum WatercolorFill {
             modifiers.append(poly.m[source])
             dirs.append(!poly.dir[source])
         }
-        return Poly(v: vertices, m: modifiers, dir: dirs, center: poly.center, sizeX: poly.sizeX, sizeY: poly.sizeY)
+        return Poly(v: vertices, m: modifiers, dir: dirs, center: poly.center, sizeX: poly.sizeX, sizeY: poly.sizeY, reach: poly.reach)
     }
 
     private static func flip(_ poly: Poly) -> Poly {
@@ -467,7 +472,7 @@ enum WatercolorFill {
             modifiers.append(poly.m[source])
             dirs.append(poly.dir[source])
         }
-        return Poly(v: vertices, m: modifiers, dir: dirs, center: poly.center, sizeX: poly.sizeX, sizeY: poly.sizeY)
+        return Poly(v: vertices, m: modifiers, dir: dirs, center: poly.center, sizeX: poly.sizeX, sizeY: poly.sizeY, reach: poly.reach)
     }
 
     /// Ray-parity from each edge midpoint, the direction test in fill.js. Even means the bleed rotation is the outward one.
@@ -560,6 +565,21 @@ enum WatercolorFill {
             return CGPoint(x: sum.x / count, y: sum.y / count)
         }
         return CGPoint(x: cx / (3 * areaSum), y: cy / (3 * areaSum))
+    }
+
+    /// The push limit for a shape: 0.6 × the smaller of its equivalent radius √(A/π) and its mean
+    /// thickness 2A/P. Both equal r for a circle, so round and square washes bleed as fill.js does
+    /// (its largest pushes are about half a hexagon side, near 0.5 r), while a 400 × 44 rim is
+    /// limited by its 44 px thickness instead of its 400 px length.
+    static func bleedReach(_ points: [CGPoint]) -> CGFloat {
+        let a = abs(area(points))
+        var perimeter: CGFloat = 0
+        for index in points.indices {
+            let next = points[(index + 1) % points.count]
+            perimeter += hypot(next.x - points[index].x, next.y - points[index].y)
+        }
+        guard a > 0, perimeter > 0 else { return 2 }
+        return max(2, 0.6 * min((a / CGFloat.pi).squareRoot(), 2 * a / perimeter))
     }
 
     private static func area(_ points: [CGPoint]) -> CGFloat {
