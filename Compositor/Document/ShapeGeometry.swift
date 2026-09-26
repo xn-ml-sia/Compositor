@@ -44,7 +44,7 @@ enum ShapeGeometry {
             return copy
         }
         var ring = points
-        if closed, ring.append(points[0])
+        if closed { ring.append(points[0]) }
         if closed, points.count >= 2 { ring.append(points[1]) }
         var samples: [StrokeSample] = [ring[0]]
         let count = ring.count

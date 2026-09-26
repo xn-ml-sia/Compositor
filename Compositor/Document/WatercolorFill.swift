@@ -249,9 +249,9 @@ enum WatercolorFill {
                 }
             }
         }
-        paint(pass.polygons, pass.fillAlpha)
-        paint(pass.darker, pass.darkerAlpha)
-        paint(pass.scatterPolygons, pass.scatterAlpha)
+        paint(pass.polygons, alpha: pass.fillAlpha)
+        paint(pass.darker, alpha: pass.darkerAlpha)
+        paint(pass.scatterPolygons, alpha: pass.scatterAlpha)
         if !pass.erases.isEmpty {
             context.setBlendMode(.destinationOut)
             for erase in pass.erases {

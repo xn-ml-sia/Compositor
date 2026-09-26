@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 // Flow fields from p5.brush `src/core/flowfield.js` (MIT, Alejandro Campos Uribe).
 // The grid is one percent of the canvas wide and covers half a canvas past each edge.
@@ -92,7 +93,7 @@ struct FlowField: Equatable, Sendable {
         if key == "custom", let customAngles, !customAngles.isEmpty {
             if let customColumns, customColumns > 0 { columns = customColumns }
             if let customRows, customRows > 0 { rows = customRows }
-            if customColumns == nil, customRows == nil, let side = Int(Double(customAngles.count).squareRoot()), side * side == customAngles.count {
+            if customColumns == nil, customRows == nil, case let side = Int(Double(customAngles.count).squareRoot()), side * side == customAngles.count {
                 columns = side
                 rows = side
             }
