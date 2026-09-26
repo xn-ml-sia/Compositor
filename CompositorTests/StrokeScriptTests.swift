@@ -98,6 +98,7 @@ struct StrokeScriptTests {
     @Test func savingThePackageKeepsTheStrokeScript() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("CompositorStrokeSave-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let package = root.appendingPathComponent("Kept.comp", isDirectory: true)
         let session = EditorSession()
         session.createDocument(width: 32, height: 32, emptyLayer: true)
