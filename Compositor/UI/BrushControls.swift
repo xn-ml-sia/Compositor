@@ -11,6 +11,17 @@ struct BrushControls: View {
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
                 .help("Paint with the foreground color (B), or erase pixels away (E)")
+                Picker("Brush", selection: $session.brushSettings.natural) {
+                    ForEach(NaturalBrushKind.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.menu).fixedSize()
+                .help("Round is the smooth tip. The others are natural-media brushes ported from p5.brush. A tablet uses pen pressure; a mouse uses speed.")
+                if session.brushSettings.natural != .round {
+                    Text("Wiggle")
+                        .scrubbable(sensitivity: 0.02, value: $session.brushSettings.wiggle, range: 0...2)
+                    Slider(value: $session.brushSettings.wiggle, in: 0...2).frame(width: 72)
+                        .help("Pushes the stroke off the pointer, like p5.brush's flow-field wiggle. 0 stays on the line.")
+                }
             }
             if session.tool == .blur {
                 Picker("Mode", selection: $session.blurMode) {

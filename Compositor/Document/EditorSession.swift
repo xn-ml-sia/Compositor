@@ -191,6 +191,8 @@ final class EditorSession {
     @ObservationIgnored var brushAnchor: CGPoint?
     /// The pointer itself, so a smoothed stroke can catch up to it when the button is released.
     @ObservationIgnored var brushPointer: CGPoint?
+    /// Tablet or Force Touch pressure for the point in progress. Nil is a mouse, and speed stands in.
+    @ObservationIgnored var brushPointingPressure: CGFloat?
     @ObservationIgnored var maskDistortPreviewCache: MaskDistortPreviewCache?
     /// The last rounded rectangle drawn for a transform in progress, by layer, with the size it was drawn at.
     @ObservationIgnored var shapeTransformPreviewCache: [UUID: (size: CGSize, image: CGImage)] = [:]

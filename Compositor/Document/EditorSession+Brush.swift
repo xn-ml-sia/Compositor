@@ -25,7 +25,7 @@ extension EditorSession {
         }
         return stroke
     }
-    func beginBrush(at point: CGPoint) {
+    func beginBrush(at point: CGPoint, pressure: CGFloat? = nil) {
         // Spot Healing and Clone Stamp rework image pixels; they have nothing to do on a mask.
         if tool == .blur, blurMode != .blur { beginWarp(at: point); return }
         guard tool == .brush || tool == .blur || (tool.isBrushTool && !isMaskSelected), canPaint, let layer = activeLayer, let document else { return }
@@ -50,24 +50,31 @@ extension EditorSession {
             settings.healing = tool == .spotHealing
             settings.erasing = tool == .brush && brushMode == .erase && !isMaskSelected
             settings.healingMode = spotHealingMode
+            // Clone, heal, and smear keep the round tip. Natural presets are a paint/erase brush.
+            if tool != .brush { settings.natural = .round; settings.wiggle = 0 }
             if isMaskSelected { settings.red = maskPaintWhite ? 1 : 0; settings.green = settings.red; settings.blue = settings.red }
             let stroke = try makeRasterEdit(for: layer, settings: settings, growsMask: tool == .brush)
+            if settings.natural != .round {
+                stroke.editName = settings.erasing ? "\(settings.natural.rawValue) Erase" : "\(settings.natural.rawValue) Stroke"
+            }
             stroke.clone = clone
             stroke.isBlur = tool == .blur
             brushStroke = stroke
-            try stroke.append(point)
+            brushPointingPressure = pressure
+            try stroke.append(point, pressure: pressure)
             brushAnchor = point
             brushPointer = point
             lastBrushPoint = (point, layer.id, isMaskSelected)
             brushRevision += 1
         } catch { cancelBrush(); brushError = error.localizedDescription }
     }
-    func continueBrush(at point: CGPoint) {
+    func continueBrush(at point: CGPoint, pressure: CGFloat? = nil) {
         if let warpStroke { warpStroke.append(point); lastBrushPoint?.point = point; brushRevision += 1; return }
         guard let brushStroke else { return }
         brushPointer = point
+        if pressure != nil { brushPointingPressure = pressure }
         guard let painted = smoothed(point) else { return }
-        do { try brushStroke.append(painted); lastBrushPoint?.point = painted; brushRevision += 1 }
+        do { try brushStroke.append(painted, pressure: brushPointingPressure); lastBrushPoint?.point = painted; brushRevision += 1 }
         catch { cancelBrush(); brushError = error.localizedDescription }
     }
     /// Where the brush actually is, with Smoothing on: it trails the pointer on a string, and only
@@ -95,6 +102,7 @@ extension EditorSession {
         brushStroke = nil
         brushAnchor = nil
         brushPointer = nil
+        brushPointingPressure = nil
         brushRevision += 1
     }
     /// Called directly by mouse-up, before the next input event can be handled.
@@ -112,7 +120,7 @@ extension EditorSession {
             // Smoothing leaves the brush short of the pointer; the stroke ends where the hand did.
             if let pointer = brushPointer, let anchor = brushAnchor, pointer != anchor,
                tool == .brush, brushSettings.smoothing > 0 {
-                try stroke.append(pointer)
+                try stroke.append(pointer, pressure: brushPointingPressure)
             }
             try stroke.flush()
             if stroke.settings.healing { try stroke.heal() }
@@ -235,5 +243,92 @@ extension EditorSession {
         let current = brushSettings.diameter
         let stepped = increase ? max(current + 1, (current * 1.2).rounded()) : min(current - 1, (current / 1.2).rounded())
         brushSettings.diameter = min(2000, max(1, stepped))
+    }
+
+    /// Watercolor wash of the current selection, revealed a layer at a time, then one undo step.
+    /// The wash is built in its own buffer, so the erases lift pigment and not the layer under it.
+    /// Main actor: `Task.yield` would otherwise resume off the thread that owns AppKit.
+    @MainActor
+    func watercolorFillSelection() async {
+        guard canEditPixels, let document, let layer = activeLayer, let selection, !selection.isEmpty else {
+            brushError = "Select an area to fill with watercolor."
+            return
+        }
+        let contours = SelectionContours.make(from: selection.path)
+        guard !contours.isEmpty else { brushError = "Select an area to fill with watercolor."; return }
+        let seed = brushSettings.naturalSeed ?? UInt64.random(in: 1...UInt64(UInt32.max))
+        let passes = WatercolorFill.passes(contours: contours, seed: seed)
+        guard !passes.isEmpty else { return }
+        let canvas = CGRect(origin: .zero, size: document.size)
+        let area = selection.coverageBounds.integral.intersection(canvas).integral.intersection(canvas)
+        guard area.width >= 1, area.height >= 1, area.width * area.height <= CGFloat(DocumentLimits.documentPixelBudget) else {
+            brushError = ProjectError.tooLarge.localizedDescription
+            return
+        }
+        let ink = paletteColor(background: false)
+        finishOpacityEdit()
+        isProjectBusy = true
+        defer { isProjectBusy = false; cancelBrush() }
+        do {
+            var settings = brushSettings
+            settings.natural = .round
+            let stroke = try makeRasterEdit(for: layer, settings: settings, growsMask: true)
+            stroke.editName = "Watercolor Fill"
+            guard area.width * area.height <= CGFloat(max(1, stroke.pixelLimit)) else { throw ProjectError.tooLarge }
+            let buffer = try BrushRaster.context(width: Int(area.width), height: Int(area.height), mask: isMaskSelected)
+            buffer.translateBy(x: -area.minX, y: -area.minY)
+            brushStroke = stroke
+            for pass in passes {
+                WatercolorFill.draw(pass, red: ink.red, green: ink.green, blue: ink.blue, mask: isMaskSelected, in: buffer)
+                guard let image = buffer.makeImage() else { throw ExportError.render }
+                try stroke.compositeImage(image, in: area)
+                brushRevision += 1
+                await Task.yield()
+            }
+            guard !stroke.patches.isEmpty else { return }
+            try commitPaintSnapshot(stroke)
+        } catch { brushError = error.localizedDescription }
+    }
+
+    /// Hatches the selection with the current natural brush (HB when the tip is still Round).
+    @MainActor
+    func hatchSelection() async {
+        guard canEditPixels, let layer = activeLayer, let selection, !selection.isEmpty else {
+            brushError = "Select an area to hatch."
+            return
+        }
+        let contours = SelectionContours.make(from: selection.path)
+        guard !contours.isEmpty else { return }
+        let kind: NaturalBrushKind = brushSettings.natural == .round ? .hb : brushSettings.natural
+        let diameter = brushSettings.diameter
+        let spacing = max(4, diameter * 0.7)
+        let seed = brushSettings.naturalSeed ?? UInt64.random(in: 1...UInt64(UInt32.max))
+        let lines = NaturalHatch.lines(contours: contours, angle: 45, spacing: spacing, seed: seed, jitter: 0.12)
+        guard !lines.isEmpty, let preset = kind.preset else { return }
+        let gain = NaturalBrushEngine.strokeGain(kind: kind, seed: seed)
+        let heavy = max(preset.pressureMin, preset.pressureMax)
+        let light = min(preset.pressureMin, preset.pressureMax)
+        var dabs: [NaturalDab] = []
+        for (index, line) in lines.enumerated() {
+            let lineSeed = seed &+ UInt64(index) &* 0x9E3779B97F4A7C15
+            let walked = NaturalBrushEngine.walk(segments: [(line.start, line.end)], pressureStart: heavy, pressureEnd: light, cursor: .start, kind: kind, diameter: diameter, seed: lineSeed, gain: gain, wiggle: min(2, max(0, brushSettings.wiggle)), ending: true)
+            dabs.append(contentsOf: walked.dabs)
+            dabs.append(contentsOf: NaturalBrushEngine.endCaps(at: line.end, pressure: light, kind: kind, diameter: diameter, seed: lineSeed, gain: gain))
+            if dabs.count > 12_000 { break }
+        }
+        guard !dabs.isEmpty else { return }
+        finishOpacityEdit()
+        isProjectBusy = true
+        defer { isProjectBusy = false }
+        do {
+            var settings = brushSettings
+            settings.natural = .round
+            let stroke = try makeRasterEdit(for: layer, settings: settings, growsMask: true)
+            stroke.editName = "\(kind.rawValue) Hatch"
+            try stroke.stampDabs(dabs)
+            guard !stroke.patches.isEmpty else { return }
+            try commitPaintSnapshot(stroke)
+            brushRevision += 1
+        } catch { brushError = error.localizedDescription }
     }
 }

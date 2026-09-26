@@ -7,6 +7,9 @@ final class MetalBrushCoverage {
     private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let pipeline: MTLComputePipelineState
+    /// Nil when the natural-media kernel failed to compile. The continuous brush does not depend on it.
+    private let naturalPipeline: MTLComputePipelineState?
+    var supportsNaturalDabs: Bool { naturalPipeline != nil }
 
     struct Tile {
         let permanent: MTLBuffer
@@ -19,11 +22,13 @@ final class MetalBrushCoverage {
         var counts: SIMD4<UInt32>
     }
     private init() throws {
-        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue(),
-              let function = try device.makeLibrary(source: Self.source, options: nil).makeFunction(name: "continuousBrush") else { throw ExportError.render }
+        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { throw ExportError.render }
+        let library = try device.makeLibrary(source: Self.source, options: nil)
+        guard let function = library.makeFunction(name: "continuousBrush") else { throw ExportError.render }
         self.device = device
         self.queue = queue
         pipeline = try device.makeComputePipelineState(function: function)
+        naturalPipeline = Self.makeNaturalPipeline(device: device)
     }
     func tile(width: Int, height: Int) throws -> Tile {
         guard let permanent = device.makeBuffer(length: width * height * MemoryLayout<Float>.stride, options: .storageModeShared),
@@ -63,6 +68,69 @@ final class MetalBrushCoverage {
             // CGContext owns its memory so makeImage's copy-on-write snapshots stay immutable.
             guard let destination = context.data else { throw ExportError.render }
             memcpy(destination, tile.preview.contents(), Int(rect.width * rect.height))
+        }
+    }
+
+    /// Stamps natural-media dabs into the same permanent/preview split as `render`.
+    /// Settled dabs fold into permanent once. Tail dabs are preview only, so replacing
+    /// a tail cannot leave the previous tail behind or count it twice.
+    func renderDabs(_ batches: [(Tile, CGRect, CGContext, [NaturalDab], [NaturalDab])], mapping: CGAffineTransform, hardness: CGFloat, canvas: CGSize) throws {
+        guard !batches.isEmpty else { return }
+        guard let naturalPipeline else { throw ExportError.render }
+        guard let command = queue.makeCommandBuffer(), let encoder = command.makeComputeCommandEncoder() else { throw ExportError.render }
+        encoder.setComputePipelineState(naturalPipeline)
+        // Held until the command buffer finishes. Releasing a dab buffer at the end of the loop
+        // would let the GPU read freed memory.
+        var dabBuffers: [MTLBuffer] = []
+        for (tile, rect, _, settled, tail) in batches {
+            let combined = settled + tail
+            let storage = combined.isEmpty ? [NaturalDab(x: 0, y: 0, radius: 0, alpha: 0)] : combined
+            guard let buffer = storage.withUnsafeBytes({ bytes -> MTLBuffer? in
+                guard let base = bytes.baseAddress else { return nil }
+                return device.makeBuffer(bytes: base, length: bytes.count, options: .storageModeShared)
+            }) else { throw ExportError.render }
+            dabBuffers.append(buffer)
+            let origin = rect.origin.applying(mapping)
+            var uniforms = Uniforms(
+                mapping: SIMD4(Float(mapping.a), Float(mapping.b), Float(mapping.c), Float(mapping.d)),
+                geometry: SIMD4(Float(origin.x), Float(origin.y), Float(hardness), 0),
+                canvas: SIMD4(Float(canvas.width), Float(canvas.height), 0, 0),
+                counts: SIMD4(UInt32(rect.width), UInt32(rect.height), UInt32(settled.count), UInt32(combined.count)))
+            encoder.setBuffer(tile.permanent, offset: 0, index: 0)
+            encoder.setBuffer(tile.preview, offset: 0, index: 1)
+            encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 2)
+            encoder.setBuffer(buffer, offset: 0, index: 3)
+            encoder.dispatchThreads(MTLSize(width: Int(rect.width), height: Int(rect.height), depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
+        }
+        encoder.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        // The dab buffers have to outlive the command buffer. The last formal use is the encode loop.
+        _ = dabBuffers
+        guard command.status == .completed else { throw command.error ?? ExportError.render }
+        for (tile, rect, context, _, _) in batches {
+            guard let destination = context.data else { throw ExportError.render }
+            copyCoverage(from: tile.preview.contents(), to: destination, width: Int(rect.width), height: Int(rect.height), bytesPerRow: context.bytesPerRow)
+        }
+    }
+
+    /// Compiled apart from the continuous brush, so a mistake here cannot turn that pipeline off.
+    private static func makeNaturalPipeline(device: MTLDevice) -> MTLComputePipelineState? {
+        guard let library = try? device.makeLibrary(source: naturalSource, options: nil),
+              let function = library.makeFunction(name: "naturalBrush") else { return nil }
+        return try? device.makeComputePipelineState(function: function)
+    }
+
+    /// The continuous kernel writes a packed buffer and the context row stride matches it.
+    /// Natural dabs use the same packing when the stride is tight, and honor a padded row otherwise.
+    private func copyCoverage(from source: UnsafeMutableRawPointer, to destination: UnsafeMutableRawPointer, width: Int, height: Int, bytesPerRow: Int) {
+        if bytesPerRow == width {
+            memcpy(destination, source, width * height)
+            return
+        }
+        for y in 0..<height {
+            memcpy(destination.advanced(by: y * bytesPerRow), source.advanced(by: y * width), width)
         }
     }
 
@@ -157,6 +225,61 @@ kernel void continuousBrush(device float *permanent [[buffer(0)]],
         permanent[index] = min(value, 20.0f);
         preview[index] = uchar(round(255.0f * (1.0f - exp(-min(value + tail, 20.0f)))));
     }
+}
+"""
+
+    /// Separate library from `source`. geometry.z is hardness here; in the continuous kernel it is radius.
+    private static let naturalSource = """
+#include <metal_stdlib>
+using namespace metal;
+
+struct BrushUniforms {
+    float4 mapping; // a, b, c, d
+    float4 geometry; // document origin of tile, hardness, unused
+    float4 canvas; // width, height
+    uint4 counts; // tile width, height, settled dab count, settled plus tail
+};
+
+// Natural-media dabs. Must match NaturalCoverage.stamp: source-over of a hard
+// antialiased disc (p5.brush's point shader), or a Gaussian when hardness is below 1.
+// geometry.z is hardness. dabs are (x, y, radius, alpha) in document points.
+// counts.z is the settled prefix, which is folded into permanent exactly once.
+float naturalDisc(float distance, float radius) {
+    float t = saturate((distance - (radius - 0.75f)) / 1.5f);
+    return 1.0f - t * t * (3.0f - 2.0f * t);
+}
+
+float naturalMask(float distance, float radius, float hardness) {
+    if (radius <= 0.0f) return 0.0f;
+    float hard = naturalDisc(distance, radius);
+    if (hardness >= 1.0f) return hard;
+    float u = saturate(distance / radius);
+    float feather = max(0.0f, (exp(-2.5f * u * u) - exp(-2.5f)) / (1.0f - exp(-2.5f)));
+    return mix(feather, hard, saturate(hardness));
+}
+
+float naturalOver(float dst, float2 p, float4 dab, float hardness) {
+    float src = dab.w * naturalMask(length(p - dab.xy), dab.z, hardness);
+    return dst + src * (1.0f - dst);
+}
+
+kernel void naturalBrush(device float *permanent [[buffer(0)]],
+                         device uchar *preview [[buffer(1)]],
+                         constant BrushUniforms &u [[buffer(2)]],
+                         device const float4 *dabs [[buffer(3)]],
+                         uint2 pixel [[thread_position_in_grid]]) {
+    if (pixel.x >= u.counts.x || pixel.y >= u.counts.y) return;
+    uint index = pixel.y * u.counts.x + pixel.x;
+    float2 local = float2(pixel) + 0.5f;
+    float2 p = u.geometry.xy + local.x * u.mapping.xy + local.y * u.mapping.zw;
+    if (any(p < 0.0f) || any(p >= u.canvas.xy)) { preview[index] = 0; return; }
+    float value = permanent[index];
+    for (uint i = 0; i < u.counts.z; ++i) value = naturalOver(value, p, dabs[i], u.geometry.z);
+    value = min(value, 1.0f);
+    permanent[index] = value;
+    float shown = value;
+    for (uint i = u.counts.z; i < u.counts.w; ++i) shown = naturalOver(shown, p, dabs[i], u.geometry.z);
+    preview[index] = uchar(round(255.0f * saturate(shown)));
 }
 """
 }

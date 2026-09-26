@@ -1575,6 +1575,17 @@ final class CanvasView: NSView {
         brushPointer = convert(event.locationInWindow, from: nil)
         updateBrushCursor()
     }
+    /// Tablet point events carry a real pressure. A plain mouse button is 0 or 1; values strictly
+    /// between those come from Force Touch and are treated as pressure too. Nil falls back to speed.
+    private func pointingPressure(_ event: NSEvent) -> CGFloat? {
+        if event.subtype == NSEvent.EventSubtype.tabletPoint {
+            let pressure = min(Float(1), max(Float(0), event.pressure))
+            return CGFloat(pressure)
+        }
+        let pressure = CGFloat(event.pressure)
+        if pressure > 0.02 && pressure < 0.98 { return pressure }
+        return nil
+    }
     override func mouseDown(with event: NSEvent) {
         session.effectSelection = nil
         optionHeld = event.modifierFlags.contains(.option)
@@ -1644,10 +1655,10 @@ final class CanvasView: NSView {
             brushPointer = point
             // Shift paints a straight line on from where the last stroke ended, as in Photoshop.
             if event.modifierFlags.contains(.shift), let from = session.shiftLineStart() {
-                session.beginBrush(at: from)
-                session.continueBrush(at: pixel)
+                session.beginBrush(at: from, pressure: pointingPressure(event))
+                session.continueBrush(at: pixel, pressure: pointingPressure(event))
             } else {
-                session.beginBrush(at: pixel)
+                session.beginBrush(at: pixel, pressure: pointingPressure(event))
             }
             brushAxisAnchor = event.modifierFlags.contains(.shift) ? pixel : nil
             brushAxisHorizontal = nil
@@ -1764,7 +1775,7 @@ final class CanvasView: NSView {
                 brushAxisHorizontal = nil
             }
             brushLastPixel = pixel
-            session.continueBrush(at: pixel)
+            session.continueBrush(at: pixel, pressure: pointingPressure(event))
             synchronizeDisplay()
             return
         }
@@ -1869,7 +1880,7 @@ final class CanvasView: NSView {
         }
         if session.brushStroke != nil || session.warpStroke != nil, !session.isProjectBusy {
             if let document = session.document {
-                session.continueBrush(at: session.viewport.documentPoint(from: convert(event.locationInWindow, from: nil), documentSize: document.size))
+                session.continueBrush(at: session.viewport.documentPoint(from: convert(event.locationInWindow, from: nil), documentSize: document.size), pressure: pointingPressure(event))
             }
             session.finishBrushImmediately()
             synchronizeDisplay()
