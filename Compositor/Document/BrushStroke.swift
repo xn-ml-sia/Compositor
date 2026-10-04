@@ -424,39 +424,26 @@ final class BrushStroke {
         let changed = naturalKeys(settled).union(tailKeys).union(gpuTailKeys)
         guard !changed.isEmpty else { return }
         let columns = (width + Self.tileSize - 1) / Self.tileSize
-        if let gpu, gpu.supportsNaturalDabs {
-            var batches: [(MetalBrushCoverage.Tile, CGRect, CGContext, [NaturalDab], [NaturalDab])] = []
-            for key in changed {
-                try allocateTile(key, x: key % columns, y: key / columns)
-                guard let tile = tiles[key] else { continue }
-                if coverage[key] == nil {
-                    coverage[key] = try BrushRaster.context(width: Int(tile.rect.width), height: Int(tile.rect.height), mask: true)
-                    gpuTiles[key] = try gpu.tile(width: Int(tile.rect.width), height: Int(tile.rect.height))
-                }
-                batches.append((gpuTiles[key]!, tile.rect, coverage[key]!,
-                                Self.dabs(settled, on: tile.rect, mapping: pixelToDocument),
-                                Self.dabs(tail, on: tile.rect, mapping: pixelToDocument)))
+        // p5 stamps one disc per spacing step (0.03–0.1 px). The Metal dab kernel walks every
+        // pixel of the tile for every dab, which stalls a drag at that density. `NaturalCoverage.stamp`
+        // is the same source-over disc and only touches the pixels a dab covers. Shade stays on the GPU.
+        for key in changed {
+            try allocateTile(key, x: key % columns, y: key / columns)
+            guard let tile = tiles[key] else { continue }
+            let w = Int(tile.rect.width), h = Int(tile.rect.height)
+            if coverage[key] == nil {
+                coverage[key] = try BrushRaster.context(width: w, height: h, mask: true)
             }
-            try gpu.renderDabs(batches, mapping: pixelToDocument, hardness: settings.hardness, canvas: canvas.size)
-        } else {
-            for key in changed {
-                try allocateTile(key, x: key % columns, y: key / columns)
-                guard let tile = tiles[key] else { continue }
-                let w = Int(tile.rect.width), h = Int(tile.rect.height)
-                if coverage[key] == nil {
-                    coverage[key] = try BrushRaster.context(width: w, height: h, mask: true)
-                }
-                if naturalCPU[key] == nil { naturalCPU[key] = [Float](repeating: 0, count: w * h) }
-                var permanent = naturalCPU[key] ?? []
-                let origin = tile.rect.origin.applying(pixelToDocument)
-                let here = Self.dabs(settled, on: tile.rect, mapping: pixelToDocument)
-                let tailHere = Self.dabs(tail, on: tile.rect, mapping: pixelToDocument)
-                NaturalCoverage.stamp(here, into: &permanent, width: w, height: h, origin: origin, mapping: pixelToDocument, hardness: settings.hardness, canvas: canvas.size)
-                naturalCPU[key] = permanent
-                var shown = permanent
-                NaturalCoverage.stamp(tailHere, into: &shown, width: w, height: h, origin: origin, mapping: pixelToDocument, hardness: settings.hardness, canvas: canvas.size)
-                if let context = coverage[key] { try Self.writeCoverage(shown, context: context) }
-            }
+            if naturalCPU[key] == nil { naturalCPU[key] = [Float](repeating: 0, count: w * h) }
+            var permanent = naturalCPU[key] ?? []
+            let origin = tile.rect.origin.applying(pixelToDocument)
+            let here = Self.dabs(settled, on: tile.rect, mapping: pixelToDocument)
+            let tailHere = Self.dabs(tail, on: tile.rect, mapping: pixelToDocument)
+            NaturalCoverage.stamp(here, into: &permanent, width: w, height: h, origin: origin, mapping: pixelToDocument, hardness: settings.hardness, canvas: canvas.size)
+            naturalCPU[key] = permanent
+            var shown = permanent
+            NaturalCoverage.stamp(tailHere, into: &shown, width: w, height: h, origin: origin, mapping: pixelToDocument, hardness: settings.hardness, canvas: canvas.size)
+            if let context = coverage[key] { try Self.writeCoverage(shown, context: context) }
         }
         gpuTailKeys = tailKeys
         try publish(changed)

@@ -283,7 +283,10 @@ enum NaturalBrushEngine {
             if length < 1e-4 { continue }
             let direction = CGPoint(x: delta.x / length, y: delta.y / length)
             var distance = leftover
-            while distance <= length && dabs.count < 8000 {
+            // One mouse sample can be a long flick. p5 steps every few hundredths of a pixel,
+            // so the old 8,000 cap stopped a charcoal or pastel flick partway and the leftover
+            // went negative, which walked the next piece backward.
+            while distance <= length && dabs.count < Self.maxDabsPerWalk {
                 let along = covered + distance
                 let batch = total > 1e-4 ? along / total : 0
                 let unit = pressureStart + (pressureEnd - pressureStart) * min(1, max(0, batch))
@@ -294,6 +297,14 @@ enum NaturalBrushEngine {
                 dabs += dab(at: at, pressure: pressure, step: step, traveled: here, direction: direction, preset: preset, diameter: diameter, seed: seed, gain: gain, wiggle: wiggle)
                 step += 1
                 distance += spacing
+            }
+            if distance <= length {
+                let reached = min(distance, length)
+                leftover = spacing
+                traveled += reached
+                covered += reached
+                anchor = CGPoint(x: segment.0.x + delta.x * reached / length, y: segment.0.y + delta.y * reached / length)
+                break
             }
             leftover = distance - length
             traveled += length
@@ -313,16 +324,23 @@ enum NaturalBrushEngine {
         return caps(at: point, pressure: pressure, preset: preset, diameter: diameter, seed: seed, gain: gain, channel: 3)
     }
 
+    /// Safety stop for one walk, not a spacing rule. A 15,000 px charcoal flick at p5's
+    /// 0.03 px step still finishes. Past this, the rest of that segment is left unstamped
+    /// and the next piece starts clean instead of stepping backward.
+    private static let maxDabsPerWalk = 500_000
+
     private static func spacing(_ preset: NaturalBrushPreset, diameter: CGFloat) -> CGFloat {
-        // p5 keeps spacing in absolute units unless `scaleBrushes` is called. Scaling it
-        // with Size keeps the same dab density at 12 px and at 80 px; an absolute 0.1 px
-        // spacing would lay hundreds of dabs per pointer move.
+        // stroke.js `spacing()` returns the preset distance in canvas pixels. `draw()` stamps
+        // once per that distance and `_moveConstant` advances by the same amount. `strokeWeight`
+        // scales the disc and the scatter only. `scaleBrushes` would also scale spacing, and
+        // a freehand `line()` does not call it. Multiplying the step by Size left a scatter
+        // cloud (HB, charcoal, crayon, pastel, colored pencil) with a few discs in it.
         switch preset.tip {
         case .spray:
             // Size is the cloud diameter for spray, so the steps sit inside that cloud.
             return min(48, max(1.25, diameter * 0.12))
         case .standard, .marker:
-            return min(max(0.35, diameter * 0.9), max(0.35, preset.spacing * diameter))
+            return max(0.02, preset.spacing)
         }
     }
 

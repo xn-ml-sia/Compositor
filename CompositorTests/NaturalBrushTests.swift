@@ -54,15 +54,37 @@ struct NaturalBrushTests {
         #expect(first.dabs.count + second.dabs.count == whole.dabs.count)
     }
 
-    /// Pen spacing is a tenth of Size. A fast touch stays in the preset band, so the disc stays
-    /// wider than that step instead of collapsing into a speck. The step itself does not change.
+    /// p5.brush `spacing()` is a canvas distance. Size scales the disc, not the step, so a
+    /// Size 40 pen takes the same steps as a small one. A fast touch stays in the preset band,
+    /// and those discs stay much wider than the 0.1 px step.
     @Test func aFastPenKeepsThePresetStepAndTheDiscsStillMeet() {
-        let firm = NaturalBrushEngine.walk(segments: [segment(CGPoint(x: 0, y: 0), CGPoint(x: 200, y: 0))], pressureStart: 1, pressureEnd: 1, cursor: .start, kind: .pen, diameter: 40, seed: 5, gain: 1, wiggle: 0, ending: false)
-        #expect((30...70).contains(firm.dabs.count))
-        let fast = NaturalBrushEngine.walk(segments: [segment(CGPoint(x: 0, y: 0), CGPoint(x: 200, y: 0))], pressureStart: 0.45, pressureEnd: 0.45, cursor: .start, kind: .pen, diameter: 40, seed: 5, gain: 1, wiggle: 0, ending: false)
-        #expect((30...70).contains(fast.dabs.count))
+        let line = [segment(CGPoint(x: 0, y: 0), CGPoint(x: 200, y: 0))]
+        let firm = NaturalBrushEngine.walk(segments: line, pressureStart: 1, pressureEnd: 1, cursor: .start, kind: .pen, diameter: 40, seed: 5, gain: 1, wiggle: 0, ending: false)
+        let fast = NaturalBrushEngine.walk(segments: line, pressureStart: 0.45, pressureEnd: 0.45, cursor: .start, kind: .pen, diameter: 40, seed: 5, gain: 1, wiggle: 0, ending: false)
+        let small = NaturalBrushEngine.walk(segments: line, pressureStart: 1, pressureEnd: 1, cursor: .start, kind: .pen, diameter: 12, seed: 5, gain: 1, wiggle: 0, ending: false)
+        #expect(firm.cursor.step == small.cursor.step)
+        #expect(firm.cursor.step == fast.cursor.step)
+        #expect(firm.cursor.step > 1500)
+        #expect((1200...2100).contains(firm.dabs.count))
+        #expect((1000...2100).contains(fast.dabs.count))
         let smallest = fast.dabs.map(\.radius).min() ?? 0
         #expect(smallest * 2 > 4)
+    }
+
+    /// Colored pencil, charcoal, HB, pen, crayon, and pastel step by their preset spacing.
+    /// The disc stays many steps wide, which is what fills the scatter into one mark.
+    @Test func freehandStepsMatchP5SpacingForTheSpottyPresets() throws {
+        let line = [segment(CGPoint(x: 0, y: 0), CGPoint(x: 120, y: 0))]
+        let kinds: [NaturalBrushKind] = [.coloredPencil, .charcoal, .hb, .pen, .crayon, .pastel]
+        for kind in kinds {
+            let preset = try #require(kind.preset)
+            let walked = NaturalBrushEngine.walk(segments: line, pressureStart: 1, pressureEnd: 1, cursor: .start, kind: kind, diameter: 40, seed: 11, gain: 1, wiggle: 0, ending: false)
+            let attempts = Double(max(walked.cursor.step - 1, 1))
+            #expect(abs(attempts - Double(120) / Double(preset.spacing)) < 3, "\(kind) stepped by Size instead of \(preset.spacing)")
+            let widest = walked.dabs.map(\.radius).max() ?? 0
+            #expect(widest * 2 > Float(preset.spacing) * 8, "\(kind) disc is not wider than its step")
+            #expect(walked.dabs.count > 400, "\(kind) left too few dabs to fill a stroke")
+        }
     }
 
     @Test func aClickLeavesOneDabAndAMarkerLeavesAHeel() {

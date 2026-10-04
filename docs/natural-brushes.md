@@ -18,7 +18,7 @@ Clone Stamp, Spot Healing, and Smear keep the round tip.
 
 ## Presets
 
-Size is p5.brush's stroke weight, scaled so spacing grows with it. At a given Size, a marker is wider than a pen, and charcoal scatters more than HB. Spray is the exception: Size is the width of the cloud, not a single dot.
+Size is p5.brush's stroke weight. It scales the disc and the scatter. The step stays the preset's `spacing`, a distance in canvas pixels: `spacing()` in `stroke.js` returns that number, and a freehand `line()` does not call `scaleBrushes`. At a given Size, a marker is wider than a pen, and charcoal scatters more than HB. Spray is the exception: Size is the width of the cloud, and its step grows with that cloud.
 
 The numbers below are the p5.brush presets (`weight`, `scatter`, `sharpness`, `grain`, `opacity`, `spacing`, pressure `ends…plateau`, gaussian `curve`). Pressure is not sorted: the first number is the stroke's ends (`min_max[0]`), the second is the broad middle (`min_max[1]`). A scripted stroke of known length uses that gaussian (exponent about 3 to 3.5) times the point's pressure. A live drag stays inside the band between those two numbers, the way p5.brush's freehand line does: tablet or speed chooses the lighter or heavier end, and the disc is not scaled down by a 0…1 touch. Crayon in a script is a straight ramp from 1.1 at the start to 0.9 at the end, with about 8 percent variation.
 
@@ -47,14 +47,14 @@ Spectral (Kubelka–Munk) mixing is not used. It assumes opaque white paper. Pai
 Both commands are in the Edit menu and need a selection.
 
 - **Watercolor Fill Selection** grows and redraws the selection outline in twenty translucent layers, including a darker pass, then lifts pigment with erased circles (four passes). Bleed is per edge, in or out, and is not clipped to the selection unless Clip is on. The wash builds up on screen, then becomes one undo step named `Watercolor Fill`. The dialog remembers bleed, texture, border, opacity, direction, angle, scatter, and clip.
-- **Hatch Selection** fills the selection with lines in the current natural brush (HB if the tip is still Round). Rand defaults to 0. Continuous joins the lines in a zig-zag, and gradient opens the spacing as the hatch proceeds. A hatch-only brush jitters each line's size by about 10 percent. Each line uses that brush's pressure envelope. The undo name is like `Charcoal Hatch`. A very large selection stops after about 12,000 dabs so the edit can finish.
+- **Hatch Selection** fills the selection with lines in the current natural brush (HB if the tip is still Round). Rand defaults to 0. Continuous joins the lines in a zig-zag, and gradient opens the spacing as the hatch proceeds. A hatch-only brush jitters each line's size by about 10 percent. Each line uses that brush's pressure envelope. The undo name is like `Charcoal Hatch`. A very large selection stops after about 400,000 dabs so the edit can finish.
 - **Field** in the brush bar steers a live drag. `None` leaves the pointer alone. The same fields (`hand`, `curved`, `zigzag`, `waves`, `seabed`, `spiral`, `columns`) are available to a stroke script.
 
 ## What was adapted for a live brush
 
 p5.brush simulates pressure from the finished length of a stroke (`gauss` in `stroke.js`) and maps it into `min_max`. A freehand line is not multiplied by a second 0…1 touch; only a plot does that, per point. A scripted stroke knows its length, so it uses the same gaussian times each point's pressure. A drag in progress does not know the length yet, so it tapers inside the preset band: the lighter end at the start, the touch's place in the band through the body, and the lighter end again as the pen lifts.
 
-p5.brush's spacing is an absolute distance unless the whole library is scaled. Here spacing scales with Size, so a large charcoal is not hundreds of dabs per pixel. Spray's Size is the cloud diameter for the same reason: in p5.brush the cloud is `scatter × stroke weight` (often much wider than the weight) while the specks stay tiny.
+p5.brush's `spacing()` is an absolute canvas distance. `strokeWeight` (Size here) scales the disc and the scatter, not that step, and a freehand line does not call `scaleBrushes`. A Size 40 pen therefore steps every 0.1 px under a disc about 0.3 × Size wide, and charcoal steps every 0.03 px through a scatter of 1.5 × Size. That is what fills the mark. Scaling the step by Size left those clouds as separate discs. Spray's Size is still the cloud diameter: in p5.brush the cloud is `scatter × stroke weight` (often much wider than the weight) while the specks stay tiny, and the live spray steps inside that cloud.
 
 ## Stroke playback
 

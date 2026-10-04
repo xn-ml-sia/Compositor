@@ -400,7 +400,9 @@ extension EditorSession {
             let walked = NaturalBrushEngine.walk(segments: [(line.start, line.end)], pressureStart: 1, pressureEnd: 1, cursor: .start, kind: kind, diameter: diameter, seed: lineSeed, gain: gain, wiggle: min(2, max(0, brushSettings.wiggle)), ending: true, span: max(length, 0.001))
             dabs.append(contentsOf: walked.dabs)
             dabs.append(contentsOf: NaturalBrushEngine.endCaps(at: line.end, pressure: cap, kind: kind, diameter: diameter, seed: lineSeed, gain: gain))
-            if dabs.count > 12_000 { break }
+            // A charcoal line at p5's 0.03 px step is tens of thousands of dabs. The old
+            // 12,000 stop cut that line off after a short run.
+            if dabs.count > 400_000 { break }
         }
         guard !dabs.isEmpty else { return }
         finishOpacityEdit()
