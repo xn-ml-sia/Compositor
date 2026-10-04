@@ -54,17 +54,15 @@ struct NaturalBrushTests {
         #expect(first.dabs.count + second.dabs.count == whole.dabs.count)
     }
 
-    /// A firm pen keeps the preset step (about a tenth of Size). A light one used to keep that
-    /// same step while the disc shrank below it, so a fast drag read as separate spots.
-    @Test func aLightPenStaysALineAndAFirmPenKeepsItsStep() {
+    /// Pen spacing is a tenth of Size. A fast touch stays in the preset band, so the disc stays
+    /// wider than that step instead of collapsing into a speck. The step itself does not change.
+    @Test func aFastPenKeepsThePresetStepAndTheDiscsStillMeet() {
         let firm = NaturalBrushEngine.walk(segments: [segment(CGPoint(x: 0, y: 0), CGPoint(x: 200, y: 0))], pressureStart: 1, pressureEnd: 1, cursor: .start, kind: .pen, diameter: 40, seed: 5, gain: 1, wiggle: 0, ending: false)
         #expect((30...70).contains(firm.dabs.count))
-        let light = NaturalBrushEngine.walk(segments: [segment(CGPoint(x: 0, y: 0), CGPoint(x: 300, y: 0))], pressureStart: 0.45, pressureEnd: 0.45, cursor: .start, kind: .pen, diameter: 40, seed: 5, gain: 1, wiggle: 0, ending: false)
-        #expect(light.dabs.count > 80)
-        let along = light.dabs.map(\.x).sorted()
-        var widest: Float = 0
-        for index in 1..<along.count { widest = max(widest, along[index] - along[index - 1]) }
-        #expect(widest < 12)
+        let fast = NaturalBrushEngine.walk(segments: [segment(CGPoint(x: 0, y: 0), CGPoint(x: 200, y: 0))], pressureStart: 0.45, pressureEnd: 0.45, cursor: .start, kind: .pen, diameter: 40, seed: 5, gain: 1, wiggle: 0, ending: false)
+        #expect((30...70).contains(fast.dabs.count))
+        let smallest = fast.dabs.map(\.radius).min() ?? 0
+        #expect(smallest * 2 > 4)
     }
 
     @Test func aClickLeavesOneDabAndAMarkerLeavesAHeel() {
@@ -86,9 +84,11 @@ struct NaturalBrushTests {
         let light = NaturalBrushMath.pressure(unit: 0, plotted: 80, span: nil, remain: 80, taperLength: 16, preset: preset, seed: 1, ending: false)
         let firmBody = NaturalBrushMath.pressure(unit: 1, plotted: 80, span: nil, remain: 80, taperLength: 16, preset: preset, seed: 1, ending: false)
         let firmEnd = NaturalBrushMath.pressure(unit: 1, plotted: 0, span: nil, remain: 0, taperLength: 16, preset: preset, seed: 1, ending: true)
-        #expect(light == 0)
-        #expect(abs(firmBody - preset.pressureMax) < 0.001)
-        #expect(abs(firmEnd - preset.pressureMin) < 0.001)
+        let low = min(preset.pressureMin, preset.pressureMax)
+        let high = max(preset.pressureMin, preset.pressureMax)
+        #expect(abs(light - low) < 0.001)
+        #expect(abs(firmBody - high) < 0.001)
+        #expect(abs(firmEnd - low) < 0.001)
         let slow = NaturalBrushMath.unitPressure(hardware: nil, from: CGPoint(x: 0, y: 0), to: CGPoint(x: 1, y: 0), diameter: 40)
         let fast = NaturalBrushMath.unitPressure(hardware: nil, from: CGPoint(x: 0, y: 0), to: CGPoint(x: 400, y: 0), diameter: 40)
         #expect(slow > 0.8)

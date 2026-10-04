@@ -184,30 +184,39 @@ enum NaturalBrushMath {
         return preset.pressureMin + (preset.pressureMax - preset.pressureMin) * value
     }
 
-    /// Live drag: taper toward `pressureMin` at both ends, sit on `pressureMax` in the body, then times the unit pressure.
-    static func liveTaper(traveled: CGFloat, remain: CGFloat, taperLength: CGFloat, preset: NaturalBrushPreset, ending: Bool) -> CGFloat {
-        let ends = preset.pressureMin
-        let body = preset.pressureMax
+    /// Where a 0…1 touch sits in the preset band. The light end is the smaller of the two
+    /// pressure numbers, the firm end the larger. p5.brush's freehand line lives in this band
+    /// (pen is about 1 to 1.2). The first Metal stroke used the same mapping.
+    static func bandPressure(unit: CGFloat, preset: NaturalBrushPreset) -> CGFloat {
+        let low = min(preset.pressureMin, preset.pressureMax)
+        let high = max(preset.pressureMin, preset.pressureMax)
+        return low + min(1, max(0, unit)) * (high - low)
+    }
+
+    /// Live drag. Tapers from the light end of the band up to the touch, and back down when the
+    /// pen lifts. The value stays inside the band. Scaling it by the 0…1 touch shrank the disc
+    /// below the step and below the scatter, so a drag landed as separate spots.
+    static func liveStrokePressure(unit: CGFloat, traveled: CGFloat, remain: CGFloat, taperLength: CGFloat, preset: NaturalBrushPreset, ending: Bool) -> CGFloat {
+        let target = bandPressure(unit: unit, preset: preset)
+        let low = min(preset.pressureMin, preset.pressureMax)
         let span = max(taperLength, 0.001)
         let enter = min(1, max(0, traveled) / span)
-        var pressure = ends + (body - ends) * enter
+        var pressure = low + (target - low) * enter
         if ending {
             let leave = min(1, max(0, remain) / span)
-            pressure = ends + (pressure - ends) * leave
+            pressure = low + (pressure - low) * leave
         }
         return pressure
     }
 
-    /// Envelope (known span) or live taper, times a 0…1 touch. Unit 0 lays down nothing.
+    /// A known span (a script, a hatch line) is p5's gaussian times that point's pressure.
+    /// A live drag stays in the preset band, the way the first Metal stroke and p5's freehand line do.
     static func pressure(unit: CGFloat, plotted: CGFloat, span: CGFloat?, remain: CGFloat, taperLength: CGFloat, preset: NaturalBrushPreset, seed: UInt64, ending: Bool) -> CGFloat {
         let touch = min(1, max(0, unit))
-        let shape: CGFloat
         if let span, span > 1e-3 {
-            shape = envelope(plotted: plotted, length: span, preset: preset, curve: curve(preset: preset, seed: seed))
-        } else {
-            shape = liveTaper(traveled: plotted, remain: remain, taperLength: taperLength, preset: preset, ending: ending)
+            return envelope(plotted: plotted, length: span, preset: preset, curve: curve(preset: preset, seed: seed)) * touch
         }
-        return shape * touch
+        return liveStrokePressure(unit: touch, traveled: plotted, remain: remain, taperLength: taperLength, preset: preset, ending: ending)
     }
 
     private static func linearEnvelope(t: CGFloat, preset: NaturalBrushPreset, curve: NaturalPressureCurve) -> CGFloat {
@@ -238,9 +247,9 @@ enum NaturalBrushEngine {
         return max(0, 1 + CGFloat(rng.gaussian(deviation: Double(strength))))
     }
 
-    /// `pressureStart` and `pressureEnd` are unit touches (0 light, 1 firm), not preset min/max.
-    /// `span` is the whole stroke when its length is known (a script, a hatch line). Nil is a live drag:
-    /// the tip tapers toward `pressureMin` at both ends and sits on `pressureMax` in between.
+    /// `pressureStart` and `pressureEnd` are unit touches (0 light, 1 firm). A live drag maps them into
+    /// the preset's pressure band before the disc is sized. `span` is the whole stroke when its length
+    /// is known (a script, a hatch line): that path keeps the gaussian times the point's pressure.
     static func walk(segments: [(CGPoint, CGPoint)], pressureStart: CGFloat, pressureEnd: CGFloat, cursor: NaturalCursor, kind: NaturalBrushKind, diameter: CGFloat, seed: UInt64, gain: CGFloat, wiggle: CGFloat, ending: Bool, span: CGFloat? = nil) -> (dabs: [NaturalDab], cursor: NaturalCursor) {
         guard let preset = kind.preset, diameter > 0 else { return ([], cursor) }
         guard !segments.isEmpty else { return ([], cursor) }
@@ -259,7 +268,7 @@ enum NaturalBrushEngine {
             // A click has to leave a mark even when grain would have skipped that one step.
             dabs += dab(at: start, pressure: startPressure, step: cursor.step, traveled: 0, direction: CGPoint(x: 1, y: 0), preset: preset, diameter: diameter, seed: seed, gain: gain, wiggle: wiggle, force: true)
             cursor.anchor = start
-            cursor.leftover = advance(nominal: spacing, pressure: startPressure, preset: preset, diameter: diameter)
+            cursor.leftover = spacing
             cursor.step += 1
         }
         let total = segments.reduce(CGFloat(0)) { $0 + hypot($1.1.x - $1.0.x, $1.1.y - $1.0.y) }
@@ -284,9 +293,7 @@ enum NaturalBrushEngine {
                 let pressure = touch(at: here, unit: unit, remain: remain, ending: ending)
                 dabs += dab(at: at, pressure: pressure, step: step, traveled: here, direction: direction, preset: preset, diameter: diameter, seed: seed, gain: gain, wiggle: wiggle)
                 step += 1
-                // A light or fast touch draws a smaller disc. Stepping by the full Size would leave that disc
-                // short of the next one: a row of spots. Close the step to the disc when it is the smaller one.
-                distance += advance(nominal: spacing, pressure: pressure, preset: preset, diameter: diameter)
+                distance += spacing
             }
             leftover = distance - length
             traveled += length
@@ -304,25 +311,6 @@ enum NaturalBrushEngine {
     static func endCaps(at point: CGPoint?, pressure: CGFloat, kind: NaturalBrushKind, diameter: CGFloat, seed: UInt64, gain: CGFloat) -> [NaturalDab] {
         guard let point, let preset = kind.preset, preset.tip == .marker else { return [] }
         return caps(at: point, pressure: pressure, preset: preset, diameter: diameter, seed: seed, gain: gain, channel: 3)
-    }
-
-    /// How far to travel before the next dab. Preset spacing, unless the disc at `pressure` is smaller than that
-    /// step — then a short enough step that the discs still meet. Spray stays on its own step: it is specks.
-    private static func advance(nominal: CGFloat, pressure: CGFloat, preset: NaturalBrushPreset, diameter: CGFloat) -> CGFloat {
-        guard preset.tip != .spray else { return nominal }
-        let width = markWidth(pressure: pressure, preset: preset, diameter: diameter)
-        guard width < nominal else { return nominal }
-        return max(0.35, width * 0.4)
-    }
-
-    /// The disc's width before the per-dab jitter, matching `standardDab` and `markerDab`.
-    private static func markWidth(pressure: CGFloat, preset: NaturalBrushPreset, diameter: CGFloat) -> CGFloat {
-        let safe = max(0.05, pressure)
-        switch preset.tip {
-        case .marker: return diameter * preset.weight * safe
-        case .spray: return diameter
-        case .standard: return safe * safe * preset.weight * diameter
-        }
     }
 
     private static func spacing(_ preset: NaturalBrushPreset, diameter: CGFloat) -> CGFloat {
@@ -361,10 +349,8 @@ enum NaturalBrushEngine {
     private static func standardDab(at point: CGPoint, pressure: CGFloat, step: Int, traveled: CGFloat, direction: CGPoint, preset: NaturalBrushPreset, diameter: CGFloat, seed: UInt64, gain: CGFloat, wiggle: CGFloat, force: Bool) -> [NaturalDab] {
         var rng = NaturalStepRNG(seed: seed, step: step, channel: force ? 5 : 0)
         let safe = max(0.05, pressure)
-        // Grain above 1 (charcoal, crayon) always lands; below 1 it skips some steps.
-        // The preset decides that, not how light this dab is. Multiplying by pressure threw most
-        // of a fast drag away, and the ones that landed no longer reached each other.
-        if !force, rng.uniform(0, 1) >= Double(preset.grain) { return [] }
+        // p5 skips a dab when a random draw beats `grain * pressure`. Grain above 1 always lands.
+        if !force, rng.uniform(0, 1) >= Double(preset.grain * safe) { return [] }
         let gauss = rng.gaussian()
         let mix = preset.sharpness + ((1 - preset.sharpness) * CGFloat(gauss)) / safe
         let vibration = diameter * preset.scatter * mix

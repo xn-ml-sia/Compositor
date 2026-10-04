@@ -8,7 +8,7 @@ Pick a preset from the **Brush** menu in the brush options. **Round** is the exi
 
 1. Choose the Brush tool (B).
 2. Pick a preset. Size, hardness, opacity, smoothing, and the foreground color still apply.
-3. Draw. A tablet's pen pressure drives the stroke. A mouse has no pressure, so a slow drag is firm and a fast one is light. The first and last moments of a stroke taper.
+3. Draw. A tablet's pen pressure, or speed on a mouse, picks a place in the preset's pressure band. A fast stroke is the lighter end of that band and a slow one the heavier end. Both stay a connected mark. The first and last moments of a stroke taper inside the band.
 4. **Hardness** at 100% is p5.brush's hard disc with a thin antialiased edge. Lower values feather each dab.
 5. **Opacity** caps the whole stroke, the same way it does for the round brush. The preset also has its own ink strength, so charcoal stays lighter than a marker at 100%.
 6. **Wiggle** pushes pencil-style dabs off the pointer. 0 stays on the line. It is the live version of p5.brush's flow-field wiggle.
@@ -20,7 +20,7 @@ Clone Stamp, Spot Healing, and Smear keep the round tip.
 
 Size is p5.brush's stroke weight, scaled so spacing grows with it. At a given Size, a marker is wider than a pen, and charcoal scatters more than HB. Spray is the exception: Size is the width of the cloud, not a single dot.
 
-The numbers below are the p5.brush presets (`weight`, `scatter`, `sharpness`, `grain`, `opacity`, `spacing`, pressure `ends…plateau`, gaussian `curve`). Pressure is not sorted: the first number is the stroke's ends (`min_max[0]`), the second is the broad middle (`min_max[1]`). A scripted stroke of known length uses that gaussian (exponent about 3 to 3.5) times the point's pressure. A live drag tapers toward the first number at both ends and sits on the second in the body, then multiplies by tablet or speed pressure. Crayon is the exception: a straight ramp from 1.1 at the start to 0.9 at the end, with about 8 percent variation.
+The numbers below are the p5.brush presets (`weight`, `scatter`, `sharpness`, `grain`, `opacity`, `spacing`, pressure `ends…plateau`, gaussian `curve`). Pressure is not sorted: the first number is the stroke's ends (`min_max[0]`), the second is the broad middle (`min_max[1]`). A scripted stroke of known length uses that gaussian (exponent about 3 to 3.5) times the point's pressure. A live drag stays inside the band between those two numbers, the way p5.brush's freehand line does: tablet or speed chooses the lighter or heavier end, and the disc is not scaled down by a 0…1 touch. Crayon in a script is a straight ramp from 1.1 at the start to 0.9 at the end, with about 8 percent variation.
 
 | Preset | weight | scatter | sharpness | grain | opacity | spacing | pressure | curve |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
@@ -36,7 +36,7 @@ The numbers below are the p5.brush presets (`weight`, `scatter`, `sharpness`, `g
 | Spray | 0.2 | 6 | — | 40 | 90 | 0.5 | 0.7…1 | 0.2, 0.35 |
 | Marker | 2 | 0.2 | — | — | 1 | 0.03 | 1.2…0.85 | 0.35, 0.25 |
 
-Pencil, pastel, crayon, charcoal, and spray opacities are p5.brush's 0–255 scale, divided by 255 when a dab is stamped. The marker's opacity is `1`, then divided by `min(Size, 1.3)`, which is already a fraction of full ink. That fraction is not divided by 255 again: p5.brush's circle routine divides every tip, and doing that to the marker would make it nearly invisible, including the darker heel at each end. Grain above 1 always leaves a dab; below 1 it skips some. How light the touch is does not skip extra dabs: a fast drag draws smaller discs, and the step closes up so they still meet. Spray's grain is how many specks each step throws.
+Pencil, pastel, crayon, charcoal, and spray opacities are p5.brush's 0–255 scale, divided by 255 when a dab is stamped. The marker's opacity is `1`, then divided by `min(Size, 1.3)`, which is already a fraction of full ink. That fraction is not divided by 255 again: p5.brush's circle routine divides every tip, and doing that to the marker would make it nearly invisible, including the darker heel at each end. Grain above 1 always leaves a dab; below 1 it skips some, and a heavier touch in the band skips fewer. Spray's grain is how many specks each step throws.
 
 Dabs inside one stroke are seeded. Redrawing the provisional tail does not shimmer, and it is not added to the finished stroke twice. Overlapping dabs use source-over, which is the blend p5.brush uses (`ONE_MINUS_DST_ALPHA`, `ONE`).
 
@@ -52,7 +52,7 @@ Both commands are in the Edit menu and need a selection.
 
 ## What was adapted for a live brush
 
-p5.brush simulates pressure from the finished length of a stroke (`gauss` in `stroke.js`). A scripted stroke knows that length, so it uses the same envelope, times each point's pressure. A drag in progress does not know the length yet, so it tapers toward `min_max[0]` at both ends, holds `min_max[1]` through the middle, and multiplies by tablet pressure (or by speed, for a mouse).
+p5.brush simulates pressure from the finished length of a stroke (`gauss` in `stroke.js`) and maps it into `min_max`. A freehand line is not multiplied by a second 0…1 touch; only a plot does that, per point. A scripted stroke knows its length, so it uses the same gaussian times each point's pressure. A drag in progress does not know the length yet, so it tapers inside the preset band: the lighter end at the start, the touch's place in the band through the body, and the lighter end again as the pen lifts.
 
 p5.brush's spacing is an absolute distance unless the whole library is scaled. Here spacing scales with Size, so a large charcoal is not hundreds of dabs per pixel. Spray's Size is the cloud diameter for the same reason: in p5.brush the cloud is `scatter × stroke weight` (often much wider than the weight) while the specks stay tiny.
 
