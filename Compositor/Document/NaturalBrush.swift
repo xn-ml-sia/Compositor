@@ -259,7 +259,7 @@ enum NaturalBrushEngine {
             // A click has to leave a mark even when grain would have skipped that one step.
             dabs += dab(at: start, pressure: startPressure, step: cursor.step, traveled: 0, direction: CGPoint(x: 1, y: 0), preset: preset, diameter: diameter, seed: seed, gain: gain, wiggle: wiggle, force: true)
             cursor.anchor = start
-            cursor.leftover = spacing
+            cursor.leftover = advance(nominal: spacing, pressure: startPressure, preset: preset, diameter: diameter)
             cursor.step += 1
         }
         let total = segments.reduce(CGFloat(0)) { $0 + hypot($1.1.x - $1.0.x, $1.1.y - $1.0.y) }
@@ -281,9 +281,12 @@ enum NaturalBrushEngine {
                 let remain = max(0, total - along)
                 let at = CGPoint(x: segment.0.x + delta.x * distance / length, y: segment.0.y + delta.y * distance / length)
                 let here = traveled + distance
-                dabs += dab(at: at, pressure: touch(at: here, unit: unit, remain: remain, ending: ending), step: step, traveled: here, direction: direction, preset: preset, diameter: diameter, seed: seed, gain: gain, wiggle: wiggle)
+                let pressure = touch(at: here, unit: unit, remain: remain, ending: ending)
+                dabs += dab(at: at, pressure: pressure, step: step, traveled: here, direction: direction, preset: preset, diameter: diameter, seed: seed, gain: gain, wiggle: wiggle)
                 step += 1
-                distance += spacing
+                // A light or fast touch draws a smaller disc. Stepping by the full Size would leave that disc
+                // short of the next one: a row of spots. Close the step to the disc when it is the smaller one.
+                distance += advance(nominal: spacing, pressure: pressure, preset: preset, diameter: diameter)
             }
             leftover = distance - length
             traveled += length
@@ -301,6 +304,25 @@ enum NaturalBrushEngine {
     static func endCaps(at point: CGPoint?, pressure: CGFloat, kind: NaturalBrushKind, diameter: CGFloat, seed: UInt64, gain: CGFloat) -> [NaturalDab] {
         guard let point, let preset = kind.preset, preset.tip == .marker else { return [] }
         return caps(at: point, pressure: pressure, preset: preset, diameter: diameter, seed: seed, gain: gain, channel: 3)
+    }
+
+    /// How far to travel before the next dab. Preset spacing, unless the disc at `pressure` is smaller than that
+    /// step — then a short enough step that the discs still meet. Spray stays on its own step: it is specks.
+    private static func advance(nominal: CGFloat, pressure: CGFloat, preset: NaturalBrushPreset, diameter: CGFloat) -> CGFloat {
+        guard preset.tip != .spray else { return nominal }
+        let width = markWidth(pressure: pressure, preset: preset, diameter: diameter)
+        guard width < nominal else { return nominal }
+        return max(0.35, width * 0.4)
+    }
+
+    /// The disc's width before the per-dab jitter, matching `standardDab` and `markerDab`.
+    private static func markWidth(pressure: CGFloat, preset: NaturalBrushPreset, diameter: CGFloat) -> CGFloat {
+        let safe = max(0.05, pressure)
+        switch preset.tip {
+        case .marker: return diameter * preset.weight * safe
+        case .spray: return diameter
+        case .standard: return safe * safe * preset.weight * diameter
+        }
     }
 
     private static func spacing(_ preset: NaturalBrushPreset, diameter: CGFloat) -> CGFloat {
@@ -340,7 +362,9 @@ enum NaturalBrushEngine {
         var rng = NaturalStepRNG(seed: seed, step: step, channel: force ? 5 : 0)
         let safe = max(0.05, pressure)
         // Grain above 1 (charcoal, crayon) always lands; below 1 it skips some steps.
-        if !force, rng.uniform(0, 1) >= Double(preset.grain * safe) { return [] }
+        // The preset decides that, not how light this dab is. Multiplying by pressure threw most
+        // of a fast drag away, and the ones that landed no longer reached each other.
+        if !force, rng.uniform(0, 1) >= Double(preset.grain) { return [] }
         let gauss = rng.gaussian()
         let mix = preset.sharpness + ((1 - preset.sharpness) * CGFloat(gauss)) / safe
         let vibration = diameter * preset.scatter * mix

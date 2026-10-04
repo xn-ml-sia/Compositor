@@ -54,6 +54,19 @@ struct NaturalBrushTests {
         #expect(first.dabs.count + second.dabs.count == whole.dabs.count)
     }
 
+    /// A firm pen keeps the preset step (about a tenth of Size). A light one used to keep that
+    /// same step while the disc shrank below it, so a fast drag read as separate spots.
+    @Test func aLightPenStaysALineAndAFirmPenKeepsItsStep() {
+        let firm = NaturalBrushEngine.walk(segments: [segment(CGPoint(x: 0, y: 0), CGPoint(x: 200, y: 0))], pressureStart: 1, pressureEnd: 1, cursor: .start, kind: .pen, diameter: 40, seed: 5, gain: 1, wiggle: 0, ending: false)
+        #expect((30...70).contains(firm.dabs.count))
+        let light = NaturalBrushEngine.walk(segments: [segment(CGPoint(x: 0, y: 0), CGPoint(x: 300, y: 0))], pressureStart: 0.45, pressureEnd: 0.45, cursor: .start, kind: .pen, diameter: 40, seed: 5, gain: 1, wiggle: 0, ending: false)
+        #expect(light.dabs.count > 80)
+        let along = light.dabs.map(\.x).sorted()
+        var widest: Float = 0
+        for index in 1..<along.count { widest = max(widest, along[index] - along[index - 1]) }
+        #expect(widest < 12)
+    }
+
     @Test func aClickLeavesOneDabAndAMarkerLeavesAHeel() {
         let click = NaturalBrushEngine.walk(segments: [segment(CGPoint(x: 4, y: 4), CGPoint(x: 4, y: 4))], pressureStart: 1, pressureEnd: 1, cursor: .start, kind: .hb, diameter: 20, seed: 3, gain: 1, wiggle: 0, ending: false)
         #expect(click.dabs.count == 1)

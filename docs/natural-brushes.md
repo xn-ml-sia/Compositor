@@ -36,7 +36,7 @@ The numbers below are the p5.brush presets (`weight`, `scatter`, `sharpness`, `g
 | Spray | 0.2 | 6 | — | 40 | 90 | 0.5 | 0.7…1 | 0.2, 0.35 |
 | Marker | 2 | 0.2 | — | — | 1 | 0.03 | 1.2…0.85 | 0.35, 0.25 |
 
-Pencil, pastel, crayon, charcoal, and spray opacities are p5.brush's 0–255 scale, divided by 255 when a dab is stamped. The marker's opacity is `1`, then divided by `min(Size, 1.3)`, which is already a fraction of full ink. That fraction is not divided by 255 again: p5.brush's circle routine divides every tip, and doing that to the marker would make it nearly invisible, including the darker heel at each end. Grain above 1 always leaves a dab; below 1 it skips some. Spray's grain is how many specks each step throws.
+Pencil, pastel, crayon, charcoal, and spray opacities are p5.brush's 0–255 scale, divided by 255 when a dab is stamped. The marker's opacity is `1`, then divided by `min(Size, 1.3)`, which is already a fraction of full ink. That fraction is not divided by 255 again: p5.brush's circle routine divides every tip, and doing that to the marker would make it nearly invisible, including the darker heel at each end. Grain above 1 always leaves a dab; below 1 it skips some. How light the touch is does not skip extra dabs: a fast drag draws smaller discs, and the step closes up so they still meet. Spray's grain is how many specks each step throws.
 
 Dabs inside one stroke are seeded. Redrawing the provisional tail does not shimmer, and it is not added to the finished stroke twice. Overlapping dabs use source-over, which is the blend p5.brush uses (`ONE_MINUS_DST_ALPHA`, `ONE`).
 
