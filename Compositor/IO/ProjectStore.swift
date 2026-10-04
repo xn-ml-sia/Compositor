@@ -12,7 +12,7 @@ extension UTType {
 
 nonisolated struct ProjectManifest: Codable, Sendable {
     /// The format version new saves write.
-    static let current = 10
+    static let current = 11
     /// Every version `load` accepts. The package-header check, the manifest check and the error
     /// message all read this, so they cannot drift apart when `current` is bumped.
     static let supported = 1...ProjectManifest.current
@@ -84,8 +84,8 @@ actor ProjectStore {
     /// `preservingStrokeScriptFrom` is the package whose `strokes.jsonl` and `strokes.cursor` are copied
     /// into the replacement. Nil reads them from `url`. The atomic write would otherwise drop both.
     /// They are read inside the coordinated write, after the images are encoded, so an append during
-    /// encoding is still kept.
-    func save(_ snapshot: ProjectSnapshot, to url: URL, preservingStrokeScriptFrom source: URL? = nil) throws {
+    /// encoding is still kept. `quickLook` is the Finder preview, which loading ignores.
+    func save(_ snapshot: ProjectSnapshot, to url: URL, quickLook: QuickLookImages? = nil, preservingStrokeScriptFrom source: URL? = nil) throws {
         try validate(snapshot.manifest)
         var images: [String: FileWrapper] = [:]
         var pixels = 0, maskPixels = 0
@@ -113,14 +113,23 @@ actor ProjectStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let metadata = try encoder.encode(snapshot.manifest)
         guard metadata.count <= 4 * 1024 * 1024 else { throw ProjectError.tooLarge }
-        let manifestFile = FileWrapper(regularFileWithContents: metadata)
-        let imageFiles = FileWrapper(directoryWithFileWrappers: images)
+        var contents = [
+            "manifest.json": FileWrapper(regularFileWithContents: metadata),
+            "images": FileWrapper(directoryWithFileWrappers: images)
+        ]
+        // Quick Look's Space-bar preview reads this by name; loading ignores it.
+        if let quickLook {
+            contents["QuickLook"] = FileWrapper(directoryWithFileWrappers: [
+                "Preview.jpg": FileWrapper(regularFileWithContents: quickLook.preview),
+            ])
+        }
         var coordinationError: NSError?
         var writeError: Error?
         let scriptSource = source
+        let baseContents = contents
         NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing, error: &coordinationError) { destination in
             do {
-                var files = ["manifest.json": manifestFile, "images": imageFiles]
+                var files = baseContents
                 let base = scriptSource ?? destination
                 if let script = try? Data(contentsOf: base.appendingPathComponent("strokes.jsonl")), !script.isEmpty {
                     files["strokes.jsonl"] = FileWrapper(regularFileWithContents: script)
@@ -210,8 +219,11 @@ actor ProjectStore {
               manifest.layers.count <= 10_000 else { throw ProjectError.tooLarge }
         for layer in manifest.layers {
             if let text = layer.text {
-                // Letters in their own colors arrived in version 10.
-                guard text.isValid, text.colorRuns == nil || manifest.version >= 10, layer.imageFile != nil, layer.isGroup != true, layer.adjustment == nil else { throw ProjectError.invalid }
+                // Per-letter colors arrived in version 10, per-letter faces in version 11.
+                guard text.isValid,
+                      text.colorRuns == nil || manifest.version >= 10,
+                      text.fontRuns == nil || manifest.version >= 11,
+                      layer.imageFile != nil, layer.isGroup != true, layer.adjustment == nil else { throw ProjectError.invalid }
             }
             if let adjustment = layer.adjustment {
                 guard manifest.version >= 7, layer.isGroup != true, layer.imageFile == nil, adjustment.isValid else { throw ProjectError.invalid }
