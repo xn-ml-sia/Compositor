@@ -65,8 +65,6 @@ static const uint8_t bayer8[64] = {
     15, 47,  7, 39, 13, 45,  5, 37, 63, 31, 55, 23, 61, 29, 53, 21,
 };
 
-// The ordered threshold for a pixel, in [0, 1). Smaller Bayer matrices are the top-left corners of the 8 × 8 one,
-// rescaled, which is how the recursive construction nests them.
 static inline float ordered_threshold(int style, size_t x, size_t y) {
     switch (style) {
     case DITHER_BAYER_2: { static const uint8_t m[4] = { 0, 2, 3, 1 }; return ((float)m[(y & 1) * 2 + (x & 1)] + 0.5f) / 4; }
@@ -84,8 +82,6 @@ static inline float ordered(float v, float threshold, int levels) {
     return (q > steps ? steps : q) / steps;
 }
 
-// How much of a halftone cell a point must be covered by before it's marked, for each screen shape. `u` and `v`
-// run from −0.5 to 0.5 across the cell; the shapes grow from its middle as coverage rises.
 static inline float spot(int style, float u, float v) {
     float au = fabsf(u), av = fabsf(v);
     switch (style) {
@@ -95,7 +91,6 @@ static inline float spot(int style, float u, float v) {
     }
 }
 
-// Old Mac fill patterns, 8 × 8, one byte per row with the leftmost pixel in the top bit, from sparsest to fullest.
 static const uint8_t patterns[][8] = {
     { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
     { 0x80, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00 },
@@ -122,4 +117,75 @@ static inline void write_pixel(uint8_t *px, float r, float g, float b) {
     px[0] = (uint8_t)lroundf(clamp01(r) * a * 255.0f);
     px[1] = (uint8_t)lroundf(clamp01(g) * a * 255.0f);
     px[2] = (uint8_t)lroundf(clamp01(b) * a * 255.0f);
+}
+
+int dither_apply(uint8_t *rgba, size_t width, size_t height, size_t stride, const DitherParams *p) {
+    size_t count = width * height;
+    if (!count) return 1;
+    int planes = p->originalColors ? 3 : 1;
+    float *tone = malloc(count * sizeof(float) * (size_t)planes);
+    uint8_t *alpha = malloc(count);
+    float *source = p->originalColors ? malloc(count * sizeof(float) * 3) : NULL;
+    if (!tone || !alpha || (p->originalColors && !source)) { free(tone); free(alpha); free(source); return 0; }
+    float gamma = exp2f(p->density * 1.5f);
+    float contrast = p->contrast >= 0 ? 1.0f / (1.0f - 0.95f * p->contrast) : 1.0f + p->contrast;
+    in_bands(height, ^(size_t first, size_t last) {
+        for (size_t y = first; y < last; ++y) {
+            const uint8_t *row = rgba + y * stride;
+            for (size_t x = 0; x < width; ++x) {
+                const uint8_t *px = row + x * 4;
+                size_t at = y * width + x;
+                alpha[at] = px[3];
+                float r = 0, g = 0, b = 0;
+                if (px[3]) {
+                    float scale = 1.0f / (float)px[3];
+                    r = px[0] * scale; g = px[1] * scale; b = px[2] * scale;
+                }
+                if (p->originalColors) {
+                    tone[at] = adjust_tone(r, gamma, contrast);
+                    tone[count + at] = adjust_tone(g, gamma, contrast);
+                    tone[2 * count + at] = adjust_tone(b, gamma, contrast);
+                    source[at * 3] = r; source[at * 3 + 1] = g; source[at * 3 + 2] = b;
+                } else {
+                    tone[at] = adjust_tone(0.2126f * r + 0.7152f * g + 0.0722f * b, gamma, contrast);
+                }
+            }
+        }
+    });
+    free(tone); free(alpha); free(source);
+    return 1;
+}
+
+void dither_dots(uint8_t *rgba, size_t width, size_t height, size_t stride, int block, const uint8_t *gap) {
+    if (block < 2) return;
+    float radius = (float)block * 0.42f, middle = (float)block / 2;
+    for (size_t y = 0; y < height; ++y) {
+        uint8_t *row = rgba + y * stride;
+        float dy = (float)(y % (size_t)block) + 0.5f - middle;
+        for (size_t x = 0; x < width; ++x) {
+            uint8_t *px = row + x * 4;
+            if (!px[3]) continue;
+            float dx = (float)(x % (size_t)block) + 0.5f - middle;
+            float cover = clamp01(radius - sqrtf(dx * dx + dy * dy) + 0.5f);
+            if (cover >= 1) continue;
+            for (int c = 0; c < 3; ++c)
+                px[c] = (uint8_t)lroundf((float)px[c] * cover + (float)gap[c] * (float)px[3] / 255.0f * (1 - cover));
+        }
+    }
+}
+
+void dither_glow(uint8_t *rgba, const uint8_t *glow, size_t width, size_t height, size_t stride, float amount) {
+    in_bands(height, ^(size_t first, size_t last) {
+        for (size_t y = first; y < last; ++y) {
+            uint8_t *row = rgba + y * stride;
+            const uint8_t *light = glow + y * stride;
+            for (size_t x = 0; x < width * 4; x += 4) {
+                float a = row[x + 3];
+                for (int c = 0; c < 3; ++c) {
+                    float v = (float)row[x + c] + (float)light[x + c] * amount * a / 255.0f;
+                    row[x + c] = (uint8_t)lroundf(v > a ? a : v);
+                }
+            }
+        }
+    });
 }
