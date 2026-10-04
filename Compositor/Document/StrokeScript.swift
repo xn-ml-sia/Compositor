@@ -174,6 +174,16 @@ enum StrokeTiming {
         return total
     }
 
+    /// The in-app speed control. 1 is the pace written in the file.
+    static func clampedRate(_ rate: CGFloat) -> CGFloat {
+        min(8, max(0.25, rate.isFinite ? rate : 1))
+    }
+
+    /// Wall-clock seconds for a delay already expressed in the file's pace. Speed does not rewrite the file.
+    static func wallSeconds(_ scriptSeconds: CGFloat, rate: CGFloat) -> CGFloat {
+        max(0, scriptSeconds) / clampedRate(rate)
+    }
+
     /// Seconds from the start of the stroke, already scaled by the pace.
     static func times(_ points: [StrokeSample], pace: StrokePace) -> [CGFloat] {
         let speed = livePixelsPerSecond * pace.multiplier
@@ -280,6 +290,13 @@ enum StrokeScriptReader {
             return ([], data.count)
         }
         return pull(data, from: stored)
+    }
+
+    /// Whether the package has a recording, and whether the cursor still has lines to play.
+    static func presence(in package: URL) -> (hasScript: Bool, unplayed: Bool) {
+        let url = package.appendingPathComponent(scriptName)
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return (false, false) }
+        return (true, !pull(data, from: rawCursor(in: package)).items.isEmpty)
     }
 
     static func rawCursor(in package: URL) -> Int {

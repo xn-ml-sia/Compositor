@@ -215,6 +215,12 @@ struct CompositorApp: App {
                     Button("Hatch Selection") { session.showHatchOptions = true }
                         .disabled(session.selection?.isEmpty != false || !session.canEditPixels)
                         .help("Hatches the selection with the current natural brush")
+                    Group {
+                        Divider()
+                        Button(session.strokePlaybackTitle) { applicationDelegate.projects.toggleStrokePlayback() }
+                            .disabled(!session.hasStrokeScript)
+                            .help(session.strokePlaybackHelp)
+                    }
                 }
                 CommandMenu("Select") {
                     // A field being edited keeps its own Select All: offer it to the responder chain

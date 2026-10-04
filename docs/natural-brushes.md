@@ -58,7 +58,7 @@ p5.brush's `spacing()` is an absolute canvas distance. `strokeWeight` (Size here
 
 ## Stroke playback
 
-An open project can be painted from outside the app. Append ops to `strokes.jsonl` and Compositor plays them through these brushes at drawing speed. See [Stroke playback](stroke-playback.md).
+A project can carry a stroke recording in `strokes.jsonl`. Open it and press Play in the Strokes bar to draw those lines through these brushes. Pause continues on the next Play. Speed changes the drawing rate and does not rewrite the file. See [Stroke playback](stroke-playback.md).
 
 ## License
 

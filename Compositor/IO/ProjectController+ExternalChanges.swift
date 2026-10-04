@@ -30,6 +30,10 @@ extension ProjectController {
         externalChanges.strokeDirty = false
         session.isStrokeScriptPaused = false
         session.isReplayingStrokes = false
+        session.strokePlaybackWanted = false
+        session.strokePlaybackRunning = false
+        session.hasStrokeScript = false
+        session.strokeScriptHasUnplayed = false
     }
 
     /// Remembers the package as it is now, so the next event compares against it.

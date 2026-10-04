@@ -1,6 +1,8 @@
 # Stroke playback
 
-An open Compositor project can be painted by something that only writes files. Append one JSON object per line to `strokes.jsonl` inside the `.comp` package. The app tails that file and plays each line through the same brush a drag uses, at drawing speed, then commits it. Undo names follow the preset (`HB Stroke`, `Charcoal Erase`, `Watercolor Fill`).
+An open Compositor project can play a stroke recording that is already in the package. The recording is `strokes.jsonl`, one JSON object per line. Something else can write that file; it does not have to stay connected. Open the project and press **Play** in the Strokes bar (Edit menu has the same command). The app plays each line through the same brush a drag uses, then commits it. Undo names follow the preset (`HB Stroke`, `Charcoal Erase`, `Watercolor Fill`).
+
+**Pause** holds the stroke on screen and leaves the document as it is. **Play** continues from that point. When the cursor is already at the end of the file, the button reads **Play from Start** and plays the recording again from the first line. Strokes already painted stay in the document. **Speed** (0.25× to 8×) changes how fast the lines are drawn. 1× is the pace written in each line. Speed does not rewrite the file.
 
 This is separate from editing `manifest.json`. A stroke script does not reload the project, does not clear undo, and does not ask the person to revert. The painted pixels become ordinary layer pixels.
 
@@ -116,6 +118,6 @@ Clears one layer back to empty pixels covering the canvas. One undo step, `Clear
 
 ## While it plays
 
-Points are handed to the brush over time, and the canvas redraws as they land. Closing the project during a stroke commits the points already drawn and does not resume that line. A line that has not started is left for the next open. Clicks on the canvas wait until the line in progress finishes.
+Nothing plays until Play. Opening a project, or appending lines while it is open, only marks the recording ready. Pause waits between points, so Play continues the same stroke. Closing the project during a stroke commits the points already drawn and does not resume that line. A line that has not started is left for the next Play. Clicks on the canvas wait until the line in progress finishes, including while playback is paused on that line.
 
-`scripts/paint_flower.py` appends a small flower. `scripts/p5_features_demo.py` appends pressure presets, a watercolor rim, a flow field, a continuous hatch, and spline and circle shapes. Open a saved project, run either script with the package path, and watch the canvas.
+`scripts/paint_flower.py` appends a small flower. `scripts/p5_features_demo.py` appends pressure presets, a watercolor rim, a flow field, a continuous hatch, and spline and circle shapes. Write either script into a saved project, open it, and press Play. The script does not have to keep running.

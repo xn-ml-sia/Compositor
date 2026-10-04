@@ -195,6 +195,18 @@ final class EditorSession {
     @ObservationIgnored var brushPointingPressure: CGFloat?
     /// True while a stroke script is feeding the brush. Canvas clicks wait so they don't join the replay.
     @ObservationIgnored var isReplayingStrokes = false
+    /// The playback bar watches these. `strokePlaybackWanted` stays on through a save hold and off when the person pauses.
+    var hasStrokeScript = false
+    var strokeScriptHasUnplayed = false
+    var strokePlaybackWanted = false
+    var strokePlaybackRunning = false
+    /// 1 draws the recording at the pace written in each line. Higher is faster. It is not stored in the package.
+    var strokePlaybackRate: CGFloat = 1 {
+        didSet {
+            let clamped = StrokeTiming.clampedRate(strokePlaybackRate)
+            if clamped != strokePlaybackRate { strokePlaybackRate = clamped }
+        }
+    }
     /// True while the open brush stroke belongs to the stroke script. The pointer's drag and release must not
     /// add points to it or finish it, or a click during playback draws a line from the stroke to the click.
     @ObservationIgnored var isScriptedBrushStroke = false

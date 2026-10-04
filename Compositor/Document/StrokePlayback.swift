@@ -5,6 +5,45 @@ import AppKit
 // `instant` so the same points commit without waiting on the clock.
 
 extension EditorSession {
+    func refreshStrokeScriptPresence() {
+        guard let package = projectURL else {
+            hasStrokeScript = false
+            strokeScriptHasUnplayed = false
+            return
+        }
+        let presence = StrokeScriptReader.presence(in: package)
+        hasStrokeScript = presence.hasScript
+        strokeScriptHasUnplayed = presence.unplayed
+    }
+
+    /// Pause while a line is on screen. Play while one is waiting. Play from Start once the cursor has caught up.
+    var strokePlaybackTitle: String {
+        if !hasStrokeScript { return "Play Strokes" }
+        if strokePlaybackWanted { return "Pause" }
+        if strokePlaybackRunning || strokeScriptHasUnplayed { return "Play" }
+        return "Play from Start"
+    }
+
+    var strokePlaybackHelp: String {
+        if strokePlaybackWanted { return "Pause. Play continues from this point in the recording. The stroke file is not changed." }
+        if strokePlaybackRunning { return "Play continues from this point in the recording." }
+        if strokeScriptHasUnplayed { return "Play the strokes recorded in this project." }
+        return "Play the recording again from the first line. Strokes already painted stay in the document."
+    }
+
+    var strokePlaybackStatus: String {
+        if strokePlaybackRunning, strokePlaybackWanted { return "Playing" }
+        if strokePlaybackRunning { return "Paused" }
+        if strokeScriptHasUnplayed { return "Ready" }
+        return "Played"
+    }
+
+    var strokePlaybackRateLabel: String {
+        let rate = strokePlaybackRate
+        if abs(rate - rate.rounded()) < 0.05 { return "\(Int(rate.rounded()))×" }
+        return String(format: "%.2g×", Double(rate))
+    }
+
     /// Plays ops in order. `instant` commits every point before returning, which is what tests use.
     /// A live playback sleeps so the canvas can show the stroke as it grows.
     @MainActor
@@ -156,10 +195,10 @@ extension EditorSession {
         for (sample, due) in zip(samples, times) {
             if Task.isCancelled { return started }
             if !instant {
+                if await holdStrokePlayback() == false { return started }
                 let wait = due - elapsed
                 if wait >= 1.0 / 60 {
-                    try? await Task.sleep(for: .milliseconds(Int(min(wait, 5) * 1000)))
-                    if Task.isCancelled { return started }
+                    if await waitForStrokePlayback(scriptSeconds: wait) == false { return started }
                     elapsed = due
                 }
             }
@@ -176,6 +215,31 @@ extension EditorSession {
             } else {
                 continueBrush(at: point, pressure: sample.pressure)
             }
+        }
+        return true
+    }
+
+    /// Pause waits here, then Play continues the same stroke. A save hold or a closed project returns false.
+    @MainActor
+    private func holdStrokePlayback() async -> Bool {
+        while !strokePlaybackWanted {
+            if Task.isCancelled || isStrokeScriptPaused { return false }
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        return !Task.isCancelled && !isStrokeScriptPaused
+    }
+
+    /// Sleeps for the file's delay divided by the in-app speed. Pause can land in the middle of a long gap.
+    @MainActor
+    private func waitForStrokePlayback(scriptSeconds: CGFloat) async -> Bool {
+        var left = scriptSeconds
+        while left >= 1.0 / 60 {
+            if await holdStrokePlayback() == false { return false }
+            let rate = StrokeTiming.clampedRate(strokePlaybackRate)
+            let slice = min(StrokeTiming.wallSeconds(left, rate: rate), 0.1)
+            try? await Task.sleep(for: .milliseconds(max(1, Int((slice * 1000).rounded()))))
+            if Task.isCancelled || isStrokeScriptPaused { return false }
+            left -= slice * rate
         }
         return true
     }

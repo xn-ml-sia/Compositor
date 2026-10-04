@@ -81,6 +81,10 @@ struct ContentView: View {
     @ViewBuilder private var editorStack: some View {
         VStack(spacing: 0) {
             toolHeaders
+            if session.hasStrokeScript {
+                StrokePlaybackBar(session: session) { applicationDelegate?.projects.toggleStrokePlayback() }
+                Divider()
+            }
             HStack(spacing: 0) {
                 toolRail
                 Divider()

@@ -43,6 +43,59 @@ struct StrokeScriptTests {
         #expect(StrokeScriptReader.kind(named: "Charcoal") == .charcoal)
     }
 
+    @Test func pauseContinuesAndAFinishedRecordingOffersPlayFromTheStart() {
+        let session = EditorSession()
+        session.hasStrokeScript = true
+        session.strokeScriptHasUnplayed = true
+        #expect(session.strokePlaybackTitle == "Play")
+        #expect(session.strokePlaybackStatus == "Ready")
+        session.strokePlaybackWanted = true
+        session.strokePlaybackRunning = true
+        #expect(session.strokePlaybackTitle == "Pause")
+        #expect(session.strokePlaybackStatus == "Playing")
+        session.strokePlaybackWanted = false
+        #expect(session.strokePlaybackTitle == "Play")
+        #expect(session.strokePlaybackStatus == "Paused")
+        session.strokePlaybackRunning = false
+        session.strokeScriptHasUnplayed = false
+        #expect(session.strokePlaybackTitle == "Play from Start")
+        #expect(session.strokePlaybackStatus == "Played")
+        session.hasStrokeScript = false
+        #expect(session.strokePlaybackTitle == "Play Strokes")
+    }
+
+    @Test func playbackSpeedScalesTheDelayAndDoesNotChangeTheFilePace() {
+        #expect(StrokeTiming.clampedRate(1) == 1)
+        #expect(StrokeTiming.clampedRate(0) == 0.25)
+        #expect(StrokeTiming.clampedRate(40) == 8)
+        #expect(abs(StrokeTiming.wallSeconds(2, rate: 1) - 2) < 0.0001)
+        #expect(abs(StrokeTiming.wallSeconds(2, rate: 2) - 1) < 0.0001)
+        #expect(abs(StrokeTiming.wallSeconds(2, rate: 0.5) - 4) < 0.0001)
+        let points = [
+            StrokeSample(x: 0, y: 0, pressure: nil, time: nil),
+            StrokeSample(x: 640, y: 0, pressure: nil, time: nil)
+        ]
+        let recorded = StrokeTiming.times(points, pace: .live)
+        #expect(abs(recorded[1] - 1) < 0.0001)
+        #expect(abs(StrokeTiming.wallSeconds(recorded[1], rate: 4) - 0.25) < 0.0001)
+    }
+
+    @Test func aRecordingIsReadyToPlayWithoutAWriterAttached() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("CompositorStrokePresence-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(StrokeScriptReader.presence(in: root).hasScript == false)
+        try Data(clearInk.utf8).write(to: root.appendingPathComponent(StrokeScriptReader.scriptName))
+        let ready = StrokeScriptReader.presence(in: root)
+        #expect(ready.hasScript && ready.unplayed)
+        let pulled = StrokeScriptReader.readNew(in: root)
+        StrokeScriptReader.storeCursor(pulled.offset, in: root)
+        let played = StrokeScriptReader.presence(in: root)
+        #expect(played.hasScript && played.unplayed == false)
+        StrokeScriptReader.storeCursor(0, in: root)
+        #expect(StrokeScriptReader.presence(in: root).unplayed)
+    }
+
     @Test func timesFollowDistanceAndAnExplicitClock() {
         let points = [
             StrokeSample(x: 0, y: 0, pressure: nil, time: nil),
