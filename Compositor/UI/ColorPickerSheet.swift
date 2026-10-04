@@ -215,3 +215,4 @@ struct DialogColorSwatch: View {
         if session.pickingForDialog { session.closeColorPicker(commit: true) }
     }
 }
+
