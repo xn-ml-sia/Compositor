@@ -28,7 +28,7 @@ A minimal manifest with one full-canvas image layer:
 ```json
 {
   "format": "com.compositor.project",
-  "version": 10,
+  "version": 11,
   "colorSpace": "sRGB",
   "documentID": "0C5E7A91-3B2D-4F6A-8E1C-9D0B7A6F5E4D",
   "width": 1920,
@@ -82,6 +82,8 @@ Compositor reads the project as soon as it changes, so never leave it half writt
 To change an existing layer, keep its `id` and overwrite its PNG, then rewrite the manifest. The layer updates in place, in the same spot in the stack.
 
 Remove images you no longer reference once the manifest no longer lists them.
+
+A project Compositor saved also has a `QuickLook` folder (`Preview.jpg`), which Finder shows as its Space-bar preview. When you change a project, delete that folder, so Finder doesn't preview an out-of-date picture; Compositor writes it again the next time it saves.
 
 ## What the open app does
 
