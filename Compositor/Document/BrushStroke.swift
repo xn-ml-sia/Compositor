@@ -17,11 +17,22 @@ nonisolated struct BrushSettings: Sendable {
     /// 0–100. The brush trails the pointer on a string of this length, so a shaky hand
     /// draws a smooth line; 0 follows the pointer exactly.
     var smoothing: CGFloat = 0
+    /// Blur: how far it softens, in canvas pixels, whatever the brush's size. Strength sets how much.
+    var blurRadius: CGFloat = 5
     /// Spot-healing uses nearby source pixels instead of the foreground color.
     /// Erase: the stroke clears the layer's pixels instead of painting color on them.
     var erasing = false
     var healing = false
     var healingMode: SpotHealingMode = .contentAware
+    /// Round keeps the continuous tip. Anything else is a p5.brush preset laid down as dabs.
+    var natural: NaturalBrushKind = .round
+    /// 0 follows the pointer. Higher values push pencil-style dabs off the stroke, a live
+    /// stand-in for p5.brush's flow-field wiggle.
+    var wiggle: CGFloat = 0
+    /// Tests set this so the same gesture replays the same dabs. Nil picks a seed per stroke.
+    var naturalSeed: UInt64? = nil
+    /// Whole-stroke length when it is known (a script, a hatch line). Nil tapers a live drag.
+    var naturalSpan: CGFloat? = nil
 }
 
 nonisolated struct BrushPatch: @unchecked Sendable {
@@ -40,6 +51,34 @@ nonisolated enum BrushRaster {
         result.scaleBy(x: 1, y: -1)
         return result
     }
+    /// A color context holding `image`'s pixels. An image already in this layout (one made from such a context)
+    /// is copied byte for byte, several times quicker than drawing it.
+    static func copy(_ image: CGImage) throws -> CGContext {
+        let context = try Self.context(width: image.width, height: image.height, mask: false)
+        guard image.bitsPerPixel == 32, image.bitsPerComponent == 8, image.bitmapInfo == context.bitmapInfo,
+              image.colorSpace == context.colorSpace, let source = image.dataProvider?.data,
+              let bytes = CFDataGetBytePtr(source), let target = context.data,
+              CFDataGetLength(source) >= image.bytesPerRow * (image.height - 1) + image.width * 4 else {
+            draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height), mask: false, context: context)
+            return context
+        }
+        let row = image.width * 4
+        for y in 0..<image.height {
+            memcpy(target + y * context.bytesPerRow, bytes + y * image.bytesPerRow, row)
+        }
+        return context
+    }
+
+    /// Runs `body` over `count` pixels in a few bands at once, each a (start, length) of whole pixels.
+    static func inBands(count: Int, _ body: (Int, Int) -> Void) {
+        let bands = count < 250_000 ? 1 : ProcessInfo.processInfo.activeProcessorCount * 2
+        let size = (count + bands - 1) / bands
+        DispatchQueue.concurrentPerform(iterations: bands) { band in
+            let start = band * size
+            if start < count { body(start, min(size, count - start)) }
+        }
+    }
+
     static func draw(_ image: CGImage, in rect: CGRect, mask: Bool, context: CGContext) {
         context.saveGState()
         context.interpolationQuality = .none
@@ -69,6 +108,15 @@ nonisolated enum BrushRaster {
         context.setAlpha(alpha)
         context.setFillColor(color)
         context.fill(bounds)
+        context.restoreGState()
+    }
+    /// Source-over of an image already coloured from coverage, in the same orientation as `fill`.
+    static func drawShaded(_ image: CGImage, in rect: CGRect, context: CGContext) {
+        context.saveGState()
+        context.interpolationQuality = .none
+        context.translateBy(x: rect.minX, y: rect.maxY)
+        context.scaleBy(x: 1, y: -1)
+        context.draw(image, in: CGRect(origin: .zero, size: rect.size))
         context.restoreGState()
     }
     /// Soft-brush falloff across the region between the hardness radius and the rim:
@@ -112,11 +160,23 @@ final class BrushStroke {
     private let gridTip: CGImage?
     /// Past this width the tip is left to the fallback rather than held in memory.
     private static let gridTipLimit: CGFloat = 3000
+    /// The options bar stops Size at 2000; strokes the app lays itself, such as committing a Smudge or Liquify at that
+    /// size, run a little wider.
+    static let maxDiameter: CGFloat = 2100
     var pixelLimit = DocumentLimits.documentPixelBudget
     /// Limits every edit to the document selection; nil when nothing is selected.
     var selectionClip: SelectionClip?
-    /// Clone Stamp: a document-size image to copy from, and the offset from each painted point to its source.
-    var clone: (image: CGImage, offset: CGSize)?
+    /// Clone Stamp, Blur, Smudge and Liquify: an image painted through the tip, and where it sits, already shifted
+    /// by any source offset. Either in document pixels (a composite of the canvas, at document size) or, `inGrid`,
+    /// in the stroke's own pixel grid: the layer's own pixels at their own resolution, so a layer scaled down and
+    /// painted keeps its detail when it's scaled back up.
+    var clone: (image: CGImage, placed: CGRect, inGrid: Bool)? { didSet { clonePieces = [:] } }
+    /// Makes part of `clone`'s image, given a rect of its pixels (top-left rows), in place of cropping it: Blur softens
+    /// the layer a piece at a time as the brush first reaches it, rather than all of it before the first dab.
+    var cloneRender: ((CGRect) -> CGImage?)? { didSet { clonePieces = [:] } }
+    /// The part of `clone` each tile draws, cut once: drawing the whole sample into every tile the brush touched,
+    /// a 25-megapixel image drawn dozens of times per mouse move, is what made big strokes crawl.
+    private var clonePieces: [Int: (image: CGImage, placed: CGRect)] = [:]
     /// A Blur stroke: `clone` holds the layer blurred, painted in place through the tip.
     var isBlur = false
     /// The clone sample replaces what's under the tip rather than drawing over it, so it can also clear pixels.
@@ -135,6 +195,14 @@ final class BrushStroke {
     private let gpu: MetalBrushCoverage?
     private var gpuTiles: [Int: MetalBrushCoverage.Tile] = [:]
     private var gpuTailKeys = Set<Int>()
+    /// Pressures parallel to `samples`, already mapped into the preset's range.
+    private var naturalPressures: [CGFloat] = []
+    private var naturalCursor = NaturalCursor.start
+    private var naturalSeed: UInt64 = 0
+    private var naturalGain: CGFloat = 1
+    private var naturalEnded = false
+    /// CPU fallback: permanent natural-brush coverage, kept apart from the tail.
+    private var naturalCPU: [Int: [Float]] = [:]
     /// Per-tile grayscale coverage. Soft tips accumulate paint within the stroke;
     /// hard tips keep their antialiased silhouette. Each tile is recomposed as original
     /// + color × coverage × opacity, preserving the stroke-wide opacity cap.
@@ -180,7 +248,7 @@ final class BrushStroke {
         paintTransform = expanded
         guard (1...1_000_000_000).contains(width), (1...1_000_000_000).contains(height),
               (1...DocumentLimits.maxSide).contains(originalWidth), (1...DocumentLimits.maxSide).contains(originalHeight),
-              settings.diameter.isFinite, (1...2000).contains(settings.diameter),
+              settings.diameter.isFinite, (1...Self.maxDiameter).contains(settings.diameter),
               settings.hardness.isFinite, (0...1).contains(settings.hardness),
               settings.opacity.isFinite, (0.01...1).contains(settings.opacity) else { throw ProjectError.tooLarge }
         let space = mask ? CGColorSpaceCreateDeviceGray() : CGColorSpace(name: CGColorSpace.sRGB)!
@@ -198,8 +266,15 @@ final class BrushStroke {
         let gridDiameter = settings.diameter / scaleX
         gridTip = gpu == nil && square && gridDiameter >= 1 && gridDiameter <= Self.gridTipLimit
             ? try Self.tip(diameter: gridDiameter, hardness: settings.hardness, falloff: falloff) : nil
-        stamp = gpu == nil && gridTip == nil && settings.diameter <= Self.stampLimit
-            ? try Self.tip(diameter: settings.diameter, hardness: settings.hardness, falloff: falloff) : nil
+        // Drawn through the tile transform, the stamp is rendered as finely as the layer's pixels: magnified onto
+        // the finer grid of a scaled-down layer, it left blocky dabs that showed once the layer was scaled back up.
+        let stampDiameter = settings.diameter / min(1, scaleX, scaleY)
+        stamp = gpu == nil && gridTip == nil && stampDiameter <= Self.stampLimit
+            ? try Self.tip(diameter: stampDiameter, hardness: settings.hardness, falloff: falloff) : nil
+        if settings.natural != .round {
+            naturalSeed = settings.naturalSeed ?? UInt64.random(in: 1...UInt64(UInt32.max))
+            naturalGain = NaturalBrushEngine.strokeGain(kind: settings.natural, seed: naturalSeed)
+        }
     }
 
     /// The tip as grayscale coverage: white at full strength, fading to black at the rim.
@@ -226,9 +301,10 @@ final class BrushStroke {
     /// than straight chords. A curve piece needs the sample after it, so the newest piece
     /// is first drawn as a provisional straight tail (the stroke never trails the cursor),
     /// then erased and replaced by the curve when the next sample arrives or on `flush()`.
-    func append(_ point: CGPoint) throws {
+    func append(_ point: CGPoint, pressure: CGFloat? = nil) throws {
         guard point.x.isFinite, point.y.isFinite, abs(point.x) <= 10_000_000, abs(point.y) <= 10_000_000 else { return }
         guard samples.last != point else { return }
+        if settings.natural != .round { try appendNatural(point, hardwarePressure: pressure); return }
         if gpu != nil { try appendContinuous(point); return }
         var changed = removeTail()
         samples.append(point)
@@ -246,6 +322,7 @@ final class BrushStroke {
 
     /// Replaces the provisional tail with the stroke's final curve piece. Safe to repeat.
     func flush() throws {
+        if settings.natural != .round { try flushNatural(); return }
         if gpu != nil { try flushContinuous(); return }
         var changed = removeTail()
         let count = samples.count
@@ -278,6 +355,148 @@ final class BrushStroke {
             before: samples[max(0, n - 3)], after: samples[n - 1])
         try renderContinuous(settled: settled, tail: [])
         samples = [samples[n - 1]]
+    }
+
+    /// Lays p5.brush dabs along the same settled-curve / straight-tail split as the round tip.
+    /// The tail is preview only. Promoting it walks that piece once, from the committed cursor.
+    private func appendNatural(_ point: CGPoint, hardwarePressure: CGFloat?) throws {
+        guard settings.natural.preset != nil else { return }
+        let unit = NaturalBrushMath.unitPressure(hardware: hardwarePressure, from: samples.last, to: point, diameter: settings.diameter)
+        samples.append(point)
+        naturalPressures.append(unit)
+        if samples.count > 4 {
+            samples.removeFirst()
+            naturalPressures.removeFirst()
+        }
+        let n = samples.count
+        var settled: [(CGPoint, CGPoint)] = []
+        var settledPressure = (unit, unit)
+        if n == 1 {
+            settled = [(point, point)]
+        } else if n >= 3 {
+            settled = pairs(continuousCurve(from: samples[n - 3], to: samples[n - 2], before: samples[max(0, n - 4)], after: point))
+            settledPressure = (naturalPressures[n - 3], naturalPressures[n - 2])
+        }
+        let tail = n >= 2 ? [(samples[n - 2], point)] : [(CGPoint, CGPoint)]()
+        let tailPressure = n >= 2 ? (naturalPressures[n - 2], unit) : (unit, unit)
+        try renderNatural(settled: settled, pressure: settledPressure, tail: tail, tailPressure: tailPressure, ending: false)
+    }
+
+    private func flushNatural() throws {
+        guard !naturalEnded else { return }
+        let n = samples.count
+        if n >= 2 {
+            let settled = pairs(continuousCurve(from: samples[n - 2], to: samples[n - 1], before: samples[max(0, n - 3)], after: samples[n - 1]))
+            try renderNatural(settled: settled, pressure: (naturalPressures[n - 2], naturalPressures[n - 1]), tail: [], tailPressure: (0, 0), ending: true)
+            samples = [samples[n - 1]]
+            naturalPressures = [naturalPressures[n - 1]]
+        } else if n == 1 {
+            try renderNatural(settled: [], pressure: (naturalPressures[0], naturalPressures[0]), tail: [], tailPressure: (0, 0), ending: true)
+        }
+        naturalEnded = true
+    }
+
+    private func pairs(_ segments: [SIMD4<Float>]) -> [(CGPoint, CGPoint)] {
+        segments.map { (CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)), CGPoint(x: CGFloat($0.z), y: CGFloat($0.w))) }
+    }
+
+    private func renderNatural(settled: [(CGPoint, CGPoint)], pressure: (CGFloat, CGFloat), tail: [(CGPoint, CGPoint)], tailPressure: (CGFloat, CGFloat), ending: Bool) throws {
+        let walked = NaturalBrushEngine.walk(segments: settled, pressureStart: pressure.0, pressureEnd: pressure.1, cursor: naturalCursor, kind: settings.natural, diameter: settings.diameter, seed: naturalSeed, gain: naturalGain, wiggle: settings.wiggle, ending: ending, span: settings.naturalSpan)
+        naturalCursor = walked.cursor
+        var settledDabs = walked.dabs
+        if ending, let preset = settings.natural.preset {
+            let taper = max(6, settings.diameter * 0.4)
+            let endPressure = NaturalBrushMath.pressure(unit: pressure.1, plotted: naturalCursor.traveled, span: settings.naturalSpan, remain: 0, taperLength: taper, preset: preset, seed: naturalSeed, ending: true)
+            settledDabs += NaturalBrushEngine.endCaps(at: naturalCursor.anchor ?? settled.last?.1 ?? samples.last, pressure: endPressure, kind: settings.natural, diameter: settings.diameter, seed: naturalSeed, gain: naturalGain)
+        }
+        let tailWalk = NaturalBrushEngine.walk(segments: tail, pressureStart: tailPressure.0, pressureEnd: tailPressure.1, cursor: naturalCursor, kind: settings.natural, diameter: settings.diameter, seed: naturalSeed, gain: naturalGain, wiggle: settings.wiggle, ending: false, span: settings.naturalSpan)
+        try compositeNatural(settled: settledDabs, tail: tailWalk.dabs)
+    }
+
+    /// One-shot dabs (hatch lines). They are settled immediately; there is no tail.
+    func stampDabs(_ dabs: [NaturalDab]) throws {
+        guard !dabs.isEmpty else { return }
+        try compositeNatural(settled: dabs, tail: [])
+    }
+
+    private func compositeNatural(settled: [NaturalDab], tail: [NaturalDab]) throws {
+        let tailKeys = naturalKeys(tail)
+        let changed = naturalKeys(settled).union(tailKeys).union(gpuTailKeys)
+        guard !changed.isEmpty else { return }
+        let columns = (width + Self.tileSize - 1) / Self.tileSize
+        // p5 stamps one disc per spacing step (0.03–0.1 px). The Metal dab kernel walks every
+        // pixel of the tile for every dab, which stalls a drag at that density. `NaturalCoverage.stamp`
+        // is the same source-over disc and only touches the pixels a dab covers. Shade stays on the GPU.
+        for key in changed {
+            try allocateTile(key, x: key % columns, y: key / columns)
+            guard let tile = tiles[key] else { continue }
+            let w = Int(tile.rect.width), h = Int(tile.rect.height)
+            if coverage[key] == nil {
+                coverage[key] = try BrushRaster.context(width: w, height: h, mask: true)
+            }
+            if naturalCPU[key] == nil { naturalCPU[key] = [Float](repeating: 0, count: w * h) }
+            var permanent = naturalCPU[key] ?? []
+            let origin = tile.rect.origin.applying(pixelToDocument)
+            let here = Self.dabs(settled, on: tile.rect, mapping: pixelToDocument)
+            let tailHere = Self.dabs(tail, on: tile.rect, mapping: pixelToDocument)
+            NaturalCoverage.stamp(here, into: &permanent, width: w, height: h, origin: origin, mapping: pixelToDocument, hardness: settings.hardness, canvas: canvas.size)
+            naturalCPU[key] = permanent
+            var shown = permanent
+            NaturalCoverage.stamp(tailHere, into: &shown, width: w, height: h, origin: origin, mapping: pixelToDocument, hardness: settings.hardness, canvas: canvas.size)
+            if let context = coverage[key] { try Self.writeCoverage(shown, context: context) }
+        }
+        gpuTailKeys = tailKeys
+        try publish(changed)
+    }
+
+    private func naturalKeys(_ dabs: [NaturalDab]) -> Set<Int> {
+        var keys = Set<Int>()
+        let inverse = pixelToDocument.inverted()
+        let columns = (width + Self.tileSize - 1) / Self.tileSize
+        let limit = CGRect(x: 0, y: 0, width: width, height: height)
+        for dab in dabs {
+            let reach = CGFloat(dab.radius) + 2
+            let box = CGRect(x: CGFloat(dab.x) - reach, y: CGFloat(dab.y) - reach, width: reach * 2, height: reach * 2).intersection(canvas)
+            guard !box.isNull, !box.isEmpty else { continue }
+            let affected = box.applying(inverse).integral.intersection(limit)
+            guard !affected.isNull, !affected.isEmpty else { continue }
+            for y in Int(affected.minY) / Self.tileSize...Int(ceil(affected.maxY) - 1) / Self.tileSize {
+                for x in Int(affected.minX) / Self.tileSize...Int(ceil(affected.maxX) - 1) / Self.tileSize {
+                    keys.insert(y * columns + x)
+                }
+            }
+        }
+        return keys
+    }
+
+    /// Dabs whose document disc can touch this tile. Conservative on a rotated layer: the tile's
+    /// document bounds are the axis-aligned box of its corners, inflated by the dab radius.
+    private static func dabs(_ dabs: [NaturalDab], on tile: CGRect, mapping: CGAffineTransform) -> [NaturalDab] {
+        let corners = [
+            CGPoint(x: tile.minX, y: tile.minY), CGPoint(x: tile.maxX, y: tile.minY),
+            CGPoint(x: tile.minX, y: tile.maxY), CGPoint(x: tile.maxX, y: tile.maxY)
+        ].map { $0.applying(mapping) }
+        guard let minX = corners.map(\.x).min(), let maxX = corners.map(\.x).max(),
+              let minY = corners.map(\.y).min(), let maxY = corners.map(\.y).max() else { return [] }
+        return dabs.filter { dab in
+            let reach = CGFloat(dab.radius) + 1.5
+            return CGFloat(dab.x) + reach >= minX && CGFloat(dab.x) - reach <= maxX
+                && CGFloat(dab.y) + reach >= minY && CGFloat(dab.y) - reach <= maxY
+        }
+    }
+
+    private static func writeCoverage(_ values: [Float], context: CGContext) throws {
+        guard let destination = context.data else { throw ExportError.render }
+        let bytes = NaturalCoverage.bytes(values)
+        let width = context.width, height = context.height, row = context.bytesPerRow
+        guard bytes.count >= width * height else { throw ExportError.render }
+        bytes.withUnsafeBytes { raw in
+            guard let source = raw.baseAddress else { return }
+            if row == width { memcpy(destination, source, width * height); return }
+            for y in 0..<height {
+                memcpy(destination.advanced(by: y * row), source.advanced(by: y * width), width)
+            }
+        }
     }
 
     private func segment(_ a: CGPoint, _ b: CGPoint) -> SIMD4<Float> {
@@ -460,26 +679,28 @@ final class BrushStroke {
                 }
                 if let clone, !isMask || isBlur {
                     // Clone Stamp: the sample, shifted by the source offset, painted through the coverage.
-                    let context = tile.context
-                    context.saveGState()
-                    // Image masks draw bottom-up; flip so the coverage lines up with the tile.
-                    context.translateBy(x: 0, y: local.height)
-                    context.scaleBy(x: 1, y: -1)
-                    context.clip(to: local, mask: mask)
-                    context.scaleBy(x: 1, y: -1)
-                    context.translateBy(x: 0, y: -local.height)
-                    context.setAlpha(settings.opacity)
-                    if replacesWithClone { context.setBlendMode(.copy) }
-                    context.interpolationQuality = .medium
-                    // Into document coordinates, where the sample lives.
-                    context.translateBy(x: -tile.rect.minX, y: -tile.rect.minY)
-                    context.concatenate(pixelToDocument.inverted())
-                    let placed = CGRect(x: -clone.offset.width, y: -clone.offset.height,
-                                        width: CGFloat(clone.image.width), height: CGFloat(clone.image.height))
-                    context.translateBy(x: placed.minX, y: placed.maxY)
-                    context.scaleBy(x: 1, y: -1)
-                    context.draw(clone.image, in: CGRect(origin: .zero, size: placed.size))
-                    context.restoreGState()
+                    // Where the sample doesn't reach, there's nothing to paint.
+                    if let piece = clonePiece(key, tile: tile.rect, clone: clone) {
+                        let context = tile.context
+                        context.saveGState()
+                        // Image masks draw bottom-up; flip so the coverage lines up with the tile.
+                        context.translateBy(x: 0, y: local.height)
+                        context.scaleBy(x: 1, y: -1)
+                        context.clip(to: local, mask: mask)
+                        context.scaleBy(x: 1, y: -1)
+                        context.translateBy(x: 0, y: -local.height)
+                        context.setAlpha(settings.opacity)
+                        if replacesWithClone { context.setBlendMode(.copy) }
+                        context.interpolationQuality = .medium
+                        // Into the space the sample lives in: the stroke's grid, or document coordinates.
+                        context.translateBy(x: -tile.rect.minX, y: -tile.rect.minY)
+                        if !clone.inGrid { context.concatenate(pixelToDocument.inverted()) }
+                        let placed = piece.placed
+                        context.translateBy(x: placed.minX, y: placed.maxY)
+                        context.scaleBy(x: 1, y: -1)
+                        context.draw(piece.image, in: CGRect(origin: .zero, size: placed.size))
+                        context.restoreGState()
+                    }
                 } else if settings.healing, !isMask {
                     // While painting, the area to heal shows as a dark wash, as in Photoshop;
                     // `heal()` rebuilds it from its surroundings when the stroke ends.
@@ -490,6 +711,9 @@ final class BrushStroke {
                     tile.context.setBlendMode(.destinationOut)
                     BrushRaster.fill(Self.eraseColor, coverage: mask, in: local, alpha: settings.opacity, context: tile.context)
                     tile.context.restoreGState()
+                } else if settings.natural != .round, !isMask,
+                          let shaded = NaturalShade.brushImage(from: coverage, red: settings.red, green: settings.green, blue: settings.blue, opacity: settings.opacity) {
+                    BrushRaster.drawShaded(shaded, in: local, context: tile.context)
                 } else {
                     BrushRaster.fill(paintColor, coverage: mask, in: local, alpha: settings.opacity, context: tile.context)
                 }
@@ -501,6 +725,26 @@ final class BrushStroke {
                 dirtyDocumentRect = dirtyDocumentRect.map { $0.union(rect) } ?? rect
             }
         }
+    }
+
+    /// The part of the clone sample under a tile, with a couple of pixels' margin so it's resampled at its edges just as
+    /// the whole sample was, and where that part sits. Nil when the sample doesn't reach the tile.
+    private func clonePiece(_ key: Int, tile: CGRect, clone: (image: CGImage, placed: CGRect, inGrid: Bool)) -> (image: CGImage, placed: CGRect)? {
+        if let piece = clonePieces[key] { return piece }
+        let placed = clone.placed
+        guard placed.width > 0, placed.height > 0 else { return nil }
+        let area = clone.inGrid ? tile : tile.applying(pixelToDocument)
+        let scaleX = CGFloat(clone.image.width) / placed.width, scaleY = CGFloat(clone.image.height) / placed.height
+        let pixels = CGRect(x: (area.minX - placed.minX) * scaleX, y: (area.minY - placed.minY) * scaleY,
+                            width: area.width * scaleX, height: area.height * scaleY)
+            .insetBy(dx: -2, dy: -2).integral
+            .intersection(CGRect(x: 0, y: 0, width: clone.image.width, height: clone.image.height))
+        guard !pixels.isNull, !pixels.isEmpty,
+              let image = cloneRender.map({ $0(pixels) }) ?? clone.image.cropping(to: pixels) else { return nil }
+        let piece = (image, CGRect(x: placed.minX + pixels.minX / scaleX, y: placed.minY + pixels.minY / scaleY,
+                                   width: pixels.width / scaleX, height: pixels.height / scaleY))
+        clonePieces[key] = piece
+        return piece
     }
 
     private static let eraseColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
@@ -687,10 +931,28 @@ final class BrushStroke {
         dirtyDocumentRect = canvas
     }
 
+    /// Draws an image over the original pixels, in document space. Used to reveal a watercolor
+    /// wash one layer at a time without letting its erases punch through the layer underneath.
+    func compositeImage(_ image: CGImage, in rect: CGRect) throws {
+        try paintCanvas { context in
+            context.saveGState()
+            context.interpolationQuality = .medium
+            context.translateBy(x: rect.minX, y: rect.maxY)
+            context.scaleBy(x: 1, y: -1)
+            context.draw(image, in: CGRect(origin: .zero, size: rect.size))
+            context.restoreGState()
+        }
+    }
+
     // MARK: Moving selected pixels
 
     /// Selected image pixels cut out of the layer, in layer pixel coordinates.
-    private var lifted: (image: CGImage, rect: CGRect)?
+    private(set) var lifted: (image: CGImage, rect: CGRect)?
+    /// The layer's own pixels (at `sourceRect`) with the selection cut out, made once as the pixels are lifted: the GPU
+    /// canvas draws a move as this with the lifted pixels over it, rather than rebuilding tiles as the pointer moves.
+    private(set) var holed: CGImage?
+    /// The layer's own pixels, for a duplicating move, which leaves them all in place.
+    var original: CGImage? { source }
     private var moveTiles = Set<Int>()
 
     /// Cuts the selected pixels out of the original image. False when nothing is lifted.
@@ -708,17 +970,32 @@ final class BrushStroke {
         BrushRaster.draw(source, in: sourceRect.offsetBy(dx: -region.minX, dy: -region.minY), mask: false, context: context)
         guard let image = context.makeImage() else { throw ExportError.render }
         lifted = (image, region)
+        let rest = try BrushRaster.context(width: Int(sourceRect.width), height: Int(sourceRect.height), mask: false)
+        BrushRaster.draw(source, in: CGRect(origin: .zero, size: sourceRect.size), mask: false, context: rest)
+        rest.translateBy(x: -sourceRect.minX, y: -sourceRect.minY)
+        rest.concatenate(inverse)
+        selectionClip.apply(to: rest)
+        rest.setBlendMode(.destinationOut)
+        rest.setFillColor(gray: 0, alpha: 1)
+        rest.fill(selectionClip.rect)
+        holed = rest.makeImage()
         return true
+    }
+
+    /// Where the lifted pixels land, in layer pixel coordinates, moved `offset` document pixels.
+    func liftedTarget(offset: CGSize) -> CGRect? {
+        guard let lifted else { return nil }
+        let inverse = pixelToDocument.inverted()
+        let zero = CGPoint.zero.applying(inverse)
+        let moved = CGPoint(x: offset.width, y: offset.height).applying(inverse)
+        return lifted.rect.offsetBy(dx: moved.x - zero.x, dy: moved.y - zero.y)
     }
 
     /// Rebuilds the affected tiles from the original: the selection becomes a transparent
     /// hole and the lifted pixels are placed `offset` document pixels away.
     func moveLifted(by offset: CGSize, duplicate: Bool = false) throws {
-        guard let lifted, let selectionClip else { return }
+        guard let lifted, let selectionClip, let target = liftedTarget(offset: offset) else { return }
         let inverse = pixelToDocument.inverted()
-        let zero = CGPoint.zero.applying(inverse)
-        let moved = CGPoint(x: offset.width, y: offset.height).applying(inverse)
-        let target = lifted.rect.offsetBy(dx: moved.x - zero.x, dy: moved.y - zero.y)
         let whole = target.minX == target.minX.rounded() && target.minY == target.minY.rounded()
         let needed = lifted.rect.union(target).integral.intersection(CGRect(x: 0, y: 0, width: width, height: height))
         var keys = moveTiles
@@ -763,6 +1040,12 @@ final class BrushStroke {
     let maskBackground: CGFloat
     var committedBounds: CGRect { (allocatedBounds ?? sourceRect).integral }
     var committedTransform: LayerTransform { transform(for: committedBounds) }
+    /// Where `rect` of the stroke's grid sits to be copied from `offset` document pixels away: the offset carried
+    /// into the grid, turned, scaled and flipped as the layer is.
+    func gridRect(_ rect: CGRect, copyingFrom offset: CGSize) -> CGRect {
+        let shift = offset.applying(pixelToDocument.inverted())
+        return rect.offsetBy(dx: -shift.width, dy: -shift.height)
+    }
     func transform(for bounds: CGRect) -> LayerTransform {
         let center = CGPoint(x: bounds.midX, y: bounds.midY).applying(pixelToDocument)
         var result = paintTransform

@@ -9,7 +9,13 @@ extension ProjectController {
     /// every save, so the digest of the package on disk is always the one we last read or wrote.
     func watchProject(at url: URL) {
         guard url != externalChanges.watcher?.url else { return }
-        externalChanges.watcher = ProjectWatcher(url: url) { [weak self] in self?.noteExternalChange() }
+        externalChanges.strokeTask?.cancel()
+        externalChanges.strokeTask = nil
+        externalChanges.strokeDirty = false
+        externalChanges.savedStrokeOffset = StrokeScriptReader.rawCursor(in: url)
+        externalChanges.watcher = ProjectWatcher(url: url, onChange: { [weak self] in self?.noteExternalChange() },
+                                                 onStrokeScript: { [weak self] in self?.noteStrokeScript() })
+        noteStrokeScript()
     }
 
     func stopWatchingProject() {
@@ -18,11 +24,21 @@ extension ProjectController {
         externalChanges.recheck?.cancel()
         externalChanges.recheck = nil
         externalChanges.pending = false
+        externalChanges.strokeGeneration += 1
+        externalChanges.strokeTask?.cancel()
+        externalChanges.strokeTask = nil
+        externalChanges.strokeDirty = false
+        session.isStrokeScriptPaused = false
+        session.isReplayingStrokes = false
+        session.strokePlaybackWanted = false
+        session.strokePlaybackRunning = false
+        session.hasStrokeScript = false
+        session.strokeScriptHasUnplayed = false
     }
 
     /// Remembers the package as it is now, so the next event compares against it.
     func rememberProjectDigest(for url: URL) async {
-        externalChanges.knownDigest = await Task.detached(priority: .utility) { try? ProjectDigest.compute(for: url) }.value
+        externalChanges.knownDigest = await Task.detached(priority: .utility, operation: { try? ProjectDigest.compute(for: url) }).value
     }
 
     /// The tab came to the front: a change that arrived while it had unsaved work and was hidden can be asked about now.
@@ -43,7 +59,7 @@ extension ProjectController {
             externalChanges.pending = false
             guard let url = session.projectURL, session.document != nil, !externalChanges.saving else { return }
             // Compare content, not modification dates: sync clients touch metadata without changing anything.
-            guard let digest = await Task.detached(priority: .utility) { try? ProjectDigest.compute(for: url) }.value,
+            guard let digest = await Task.detached(priority: .utility, operation: { try? ProjectDigest.compute(for: url) }).value,
                   digest != externalChanges.knownDigest else { continue }
             // Wait for an edit in progress to finish rather than pulling the document out from under it.
             guard session.canStartProjectOperation, session.transformEdit == nil, workspace?.isManaging != true else {
@@ -109,4 +125,10 @@ final class ExternalChangeState {
     var recheckAttempt = 0
     /// Reloads performed because the package changed on disk. Read by tests.
     var reloadCount = 0
+    var strokeTask: Task<Void, Never>?
+    var strokeDirty = false
+    /// Bumped when a playback task starts and when watching stops, so a finishing task cannot clear the next one.
+    var strokeGeneration = 0
+    /// Byte offset last saved with the pixels. Don't Save writes this back so unsaved strokes play again.
+    var savedStrokeOffset = 0
 }
