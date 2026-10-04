@@ -1,1 +1,1 @@
-PLACEHOLDER_CV_WILL_REPLACE
+$file:/tmp/cv-content.swift
