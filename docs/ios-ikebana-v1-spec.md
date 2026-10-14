@@ -118,7 +118,7 @@ Camellia.ikebana/
     "origin": [640, 1580],
     "shinLength": 900,
     "rays": [
-      { "role": "shin", "angle": 12, "length": 1, "marker": "circle" },
+      { "role": "shin", "angle": -12, "length": 1, "marker": "circle" },
       { "role": "soe", "angle": -45, "length": 0.75, "marker": "square" },
       { "role": "hikae", "angle": 75, "length": 0.5, "marker": "triangle" }
     ]
@@ -165,7 +165,7 @@ For every element:
 
 `guides` is omitted when the template has none. It is not derived from the Mac document's `guides` array. The exporter leaves an existing `guides` object in place when it rewrites a template.
 
-`origin` is the vessel mouth in canvas pixels. `shinLength` is Shin's length in those same pixels. Each ray's `length` is a fraction of `shinLength`: Shin 1, Soe 3/4, Hikae 1/2. `angle` is degrees off straight up, positive clockwise (to the right on screen). The unmirrored example is the front elevation (立面図): Shin 12° off vertical, inside the usual 10°–15° lean; Soe at 45° on the opposite side of vertical; Hikae at 75° on the other side from Soe, the side Shin leans toward. The app draws the stored angles and does not clamp them. Markers are Shin's circle (真), Soe's square (副), and Hikae's triangle (控). The top plan in the same diagram is not a second set of rays, and the shorter side stems are not guides.
+`origin` is the vessel mouth in canvas pixels. `shinLength` is Shin's length in those same pixels. Each ray's `length` is a fraction of `shinLength`: Shin 1, Soe 3/4, Hikae 1/2. `angle` is degrees off straight up, positive clockwise (to the right on screen). The unmirrored example is the front elevation (立面図): Shin and Soe lean to the same side, both left of vertical, Shin at −12° (inside the usual 10°–15° lean) and Soe at −45°; Hikae leans to the opposite side, at +75°. The app draws the stored angles and does not clamp them. Markers are Shin's circle (真), Soe's square (副), and Hikae's triangle (控). The top plan in the same diagram is not a second set of rays, and the shorter side stems are not guides.
 
 On the phone the three rays are faint dashed lines from the origin to those lengths, with a small marker at each end. They do not snap. Mirror negates every angle and leaves lengths alone. Dragging the origin moves only that point; it starts at the template `origin`. Visibility (off by default), mirror (off by default), and a dragged origin are device state per template id, not fields of the arrangement file.
 
