@@ -13,3 +13,9 @@ If you've been asked to make or change an image in a `.comp` project, you don't 
 - Match the surrounding code: its naming, its comment style and density.
 - American spelling in code, comments and UI ("color", not "colour").
 - The project file format is described in [docs/project-format.md](docs/project-format.md). A change to what's saved means a format version bump there and in `ProjectManifest.current`.
+
+## Cursor Cloud specific instructions
+
+Cloud Agent machines are Linux. The Compositor app and its tests build only on macOS 26.5 with Xcode 26.6 (`xcodebuild`, arm64). That is what `.github/workflows/verify.yml` runs. `xcodebuild` is not on these machines, and the app cannot be launched here.
+
+The workflow that does run is authoring a `.comp` package, described in [docs/writing-comp-files.md](docs/writing-comp-files.md). `python3` and Pillow (`python3-pil`) are installed for 8-bit PNG layers. A loadable package has `manifest.json` (`format` `com.compositor.project`, version 10, `colorSpace` `sRGB`) and `images/<LAYER-UUID>.png` files whose names match each layer `id` and whose pixel size matches `transform.size`. Confirm that with Pillow (`RGBA` or `RGB`, 8-bit). `python3 scripts/paint_flower.py <package.comp>` appends a brush script to `strokes.jsonl`. The Mac app is what plays those strokes onto the canvas.
