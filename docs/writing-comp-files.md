@@ -134,7 +134,7 @@ An adjustment layer has an `adjustment` object and no `imageFile`, and it affect
 
 ## Painting stroke by stroke
 
-Appending to `manifest.json` reloads the whole project and clears undo. To paint with the brushes instead, append lines to `strokes.jsonl` in the package. Open the project and press Play. The app plays each line through the real brush, at the speed chosen in the Strokes bar, as its own undo step. It does not reload the project, and the writer does not have to stay connected. The format, the cursor file, and a flower script are in [Stroke playback](stroke-playback.md).
+Appending to `manifest.json` reloads the whole project and clears undo. To paint with the brushes instead, append lines to `strokes.jsonl` in the package. Open the project and press Play. The app plays each line through the real brush, at the speed chosen in the Strokes bar, as its own undo step. It does not reload the project, and the writer does not have to stay connected. The format, the cursor file, and a flower script are in [Stroke playback](stroke-playback.md). An `element` line in that same file tags a layer for File > Export Sei & Shin Template; playback skips it. `examples/SeiShinSample.comp` is a tagged sample.
 
 ```json
 {"op":"layer","name":"Petals"}

@@ -84,7 +84,7 @@ The template stores, in the stem's unflipped local pixels:
 
 - `attach`, a fraction from 0 to 1 along the rest centerline's arc length.
 - `offset`, the child's anchor minus that point on the rest centerline, rotated into the rest tangent frame (tangent, clockwise normal).
-- `localRotation`, the child's clockwise degrees minus the rest tangent's angle.
+- `localRotation`, the child's clockwise degrees minus the stem's clockwise degrees and the rest tangent's angle. Mac rotation is absolute, and the phone adds the stem's rotation again at draw time, so both have to come out or a turned stem turns the flower twice.
 - `localScale`, the child's uniform scale divided by the stem's scale at export.
 - `flipX`, the child's own horizontal flip, fixed after export.
 
@@ -105,11 +105,11 @@ Camellia.ikebana/
     └── vessel.png
 ```
 
-`manifest.json`, format `com.compositor.ikebana.template`, version 1:
+`manifest.json`, format `com.seiandshin.template`, version 1:
 
 ```json
 {
-  "format": "com.compositor.ikebana.template",
+  "format": "com.seiandshin.template",
   "version": 1,
   "id": "camellia-slanted",
   "name": "Camellia, slanted",
@@ -175,7 +175,7 @@ Images are 8-bit sRGB PNG, RGBA, trimmed to the opaque bounding box so a full-ca
 
 Today a layer has a UUID and a name, and a played stroke is just pixels. The exporter needs an id, a kind, a parent, an anchor, and, for a stem, a centerline. Those have to be written where a later Mac save will not delete them.
 
-**Write one `element` line per part into `strokes.jsonl`.** The current player hits the `default` branch, skips the line, and moves `strokes.cursor` past it. Playback of the brushes is unchanged. The next save copies the line verbatim.
+**Write one `element` line per part into `strokes.jsonl`.** Playback parses the line and does not paint it: the pixels are already on the layer, the brush is unchanged, and there is no undo step. The cursor moves past the line. A line that says `element` but is not a valid one is skipped the same way as any unknown op, and the exporter reports that line instead of dropping the part. The next save copies the line verbatim. How a script appends these lines is in [Stroke playback](stroke-playback.md). `examples/SeiShinSample.comp` is a tagged project small enough to export without a brush script.
 
 ```json
 {"op":"element","id":"stem-main","kind":"stem","layer":"6F1D3C2A-0B7E-4E8A-9C4D-2A1B3C4D5E6F","anchor":[420,900],"centerline":[[420,900],[460,640],[520,280]]}
@@ -187,12 +187,13 @@ Today a layer has a UUID and a name, and a played stroke is just pixels. The exp
 Authoring rules the exporter enforces:
 
 - One element, one layer. Paint the stem and each rigid child on its own layer (`op: layer` with an explicit `id`, then the strokes, watercolor, and hatches for that layer).
+- An element id is at most 64 characters of letters, numbers, hyphens, and underscores. It is also the PNG's file name.
 - Every referenced layer exists, has an image, and is not a group. Two element lines may not share an `id` or a `layer`.
-- `parent` refers to a `stem` element. No cycles, no grandchildren.
+- `parent` refers to a `stem` element. No cycles, no grandchildren. A flower, leaf, or berry has to have that parent. A stem, grass, vessel, stone, or moss does not have one.
 - A stem has a centerline of at least two points. Other kinds do not.
 - Untagged layers (a sketch, a paper wash) are left out of the template. The phone draws its own paper.
 
-The exporter converts document-pixel anchors and centerlines into the trimmed PNG's local pixels by inverting that layer's rest `transform` (center, clockwise rotation, flips, scale). Non-uniform Mac scale (`size` versus image pixel size differs between axes) is baked into the PNG and the template scale becomes 1 on both axes. Opacity below 1 and a raster mask are baked into alpha. A live clipping mask (`maskSourceID`), an adjustment, or a layer effect fails the export with a message to merge it first: the phone has no effects stack. A blend mode other than Normal is exported as the layer's stored pixels and the exporter warns; authors paint these templates in Normal.
+The exporter converts document-pixel anchors and centerlines into the trimmed PNG's local pixels by inverting that layer's rest `transform` (center, clockwise rotation, flips, scale). Non-uniform Mac scale (`size` versus image pixel size differs between axes) is baked into the PNG and the template scale becomes 1 on both axes. Opacity below 1 and a raster mask are baked into alpha. A vertical flip is baked into the pixels, because a template element stores only `flipX`. A live clipping mask (`maskSourceID`), an adjustment, or a layer effect fails the export with a message to merge it first: the phone has no effects stack. A blend mode other than Normal is exported as the layer's stored pixels and the exporter warns; authors paint these templates in Normal. A stem's exported anchor is the first centerline point; an `anchor` on that element line is kept in `strokes.jsonl` and not used.
 
 **Alternatives, and why they are worse:**
 
@@ -269,11 +270,11 @@ Flip is applied at draw time. `bendTip` is stored in unflipped local pixels (`C[
 
 One file per template, under Application Support, named `<template id>.json`. It is rewritten when a gesture or button commits, including undo, redo, and reset. The undo stack is session-only, as Mac undo is, and is not written.
 
-Format `com.compositor.ikebana.arrangement`, version 1:
+Format `com.seiandshin.arrangement`, version 1:
 
 ```json
 {
-  "format": "com.compositor.ikebana.arrangement",
+  "format": "com.seiandshin.arrangement",
   "version": 1,
   "templateID": "camellia-slanted",
   "elements": [
@@ -348,7 +349,7 @@ Portrait only. One arrangement on screen. No brush, no document browser beyond t
 
 Each milestone is usable on its own. Later ones do not reopen the format except to fill fields the earlier milestone left at rest.
 
-1. **Mac export, three templates.** `element` lines in three real `.comp` projects. Exporter writes `.ikebana` packages: trimmed PNGs, parent links, anchors, z-order, stem centerlines. It does not read Mac guides. `guides` is authored on the template, and a re-export keeps that object. A template that violates the authoring rules fails with a specific message. iOS is not required to draw yet. Convert three arrangements that already look right on the Mac canvas.
+1. **Mac export, three templates.** `element` lines in three real `.comp` projects. Exporter writes `.ikebana` packages: trimmed PNGs, parent links, anchors, z-order, stem centerlines. It does not read Mac guides. `guides` is authored on the template, and a re-export keeps that object. A template that violates the authoring rules fails with a specific message. iOS is not required to draw yet. Convert three arrangements that already look right on the Mac canvas. The checked-in sample is `examples/SeiShinSample.comp`. A real arrangement is converted on a Mac that has its stroke script: the script appends the `element` lines, and the exporter does not infer centerlines.
 2. **Canvas: select, move, scale, rotate, flip.** Bundled templates drawn with Metal as affine sprites (bend identity). Hit testing, the gesture table except the tip handle, children following a rigid stem. Paper background. Portrait iPhone.
 3. **Bend.** Tip handle, FABRIK, mesh warp, children riding `attach`. Rest pose stays the PNG. The stretch behavior above is what "done" means: length held, flower not smeared.
 4. **Duplicate, delete, undo, redo, reset.** Session undo stack. Children duplicate and delete with the stem.

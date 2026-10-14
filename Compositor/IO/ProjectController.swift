@@ -190,6 +190,37 @@ final class ProjectController {
         } catch { await showError("Couldn’t export JPEG", error: error) }
     }
 
+    /// Writes a Sei & Shin template from the open document's pixels and the package's `strokes.jsonl`.
+    /// The project has to be saved: the element tags live in that file, which a save copies through unchanged.
+    func exportSeiShinTemplate() async {
+        guard session.document != nil, let package = session.projectURL, begin() else { return }
+        defer { session.isProjectBusy = false }
+        guard let snapshot = session.projectSnapshot() else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.seiShinTemplate]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.title = "Export Sei & Shin Template"
+        panel.nameFieldStringValue = package.deletingPathExtension().lastPathComponent + ".ikebana"
+        let response: NSApplication.ModalResponse
+        if let window { response = await panel.beginSheetModal(for: window) }
+        else { response = await panel.begin() }
+        guard response == .OK, let url = panel.url else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let script = (try? Data(contentsOf: package.appendingPathComponent(StrokeScriptReader.scriptName))) ?? Data()
+            let result = try SeiShinTemplateExporter.export(snapshot: snapshot, script: script, to: url)
+            guard !result.warnings.isEmpty else { return }
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "Exported the Sei & Shin template"
+            alert.informativeText = result.warnings.joined(separator: "\n")
+            alert.addButton(withTitle: "OK")
+            _ = await show(alert)
+        } catch { await showError("Couldn’t export the Sei & Shin template", error: error) }
+    }
+
     private func saveCurrent(asNew: Bool = false) async -> Bool {
         guard session.document != nil else { return true }
         guard let prepared = await prepareSave(asNew: asNew) else { return false }
