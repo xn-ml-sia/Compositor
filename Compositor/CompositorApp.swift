@@ -83,6 +83,9 @@ struct CompositorApp: App {
                     Button("Export JPEG…") { Task { await applicationDelegate.projects.exportJPEG() } }
                         .configuredKeyboardShortcut("s", modifiers: [.command, .option, .shift])
                         .disabled(session.document == nil || !applicationDelegate.projects.canStart)
+                    Button("Export Sei & Shin Template…") { Task { await applicationDelegate.projects.exportSeiShinTemplate() } }
+                        .configuredKeyboardShortcut("e", modifiers: [.command, .shift, .option])
+                        .disabled(session.document == nil || session.projectURL == nil || !applicationDelegate.projects.canStart)
                     Divider()
                     Button("Close Project") {
                         if let window = applicationDelegate.projects.window {

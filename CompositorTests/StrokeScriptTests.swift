@@ -41,6 +41,45 @@ struct StrokeScriptTests {
         #expect(fill.options.opacity == 180)
         #expect(StrokeScriptReader.kind(named: "2B") == .pencil2B)
         #expect(StrokeScriptReader.kind(named: "Charcoal") == .charcoal)
+        let stem = try #require(StrokeScriptReader.parse("{\"op\":\"element\",\"id\":\"stem-main\",\"kind\":\"stem\",\"layer\":\"6F1D3C2A-0B7E-4E8A-9C4D-2A1B3C4D5E6F\",\"anchor\":[0,0],\"centerline\":[[15,38],[15,12]],\"note\":\"kept\"}"))
+        guard case .element(let element) = stem else { Issue.record("expected an element"); return }
+        #expect(element.id == "stem-main" && element.kind == .stem && element.anchor == CGPoint(x: 0, y: 0))
+        #expect(element.centerline == [CGPoint(x: 15, y: 38), CGPoint(x: 15, y: 12)])
+        let flower = try #require(StrokeScriptReader.parse("{\"op\":\"element\",\"id\":\"camellia\",\"kind\":\"flower\",\"layer\":\"Petals\",\"parent\":\"stem-main\"}"))
+        guard case .element(let child) = flower else { Issue.record("expected a flower"); return }
+        #expect(child.kind == .flower && child.parent == "stem-main" && child.attach == nil && child.centerline == nil)
+        #expect(StrokeScriptReader.parse("{\"op\":\"element\",\"id\":\"nope\"}") == nil)
+        #expect(StrokeScriptReader.parse("{\"op\":\"element\",\"id\":\"x\",\"kind\":\"twig\",\"layer\":\"L\"}") == nil)
+        let skipped = StrokeScriptReader.pull(Data("{\"op\":\"element\",\"id\":\"nope\"}\n".utf8), from: 0)
+        #expect(skipped.items.count == 1 && skipped.items[0].op == nil)
+        #expect(skipped.items[0].error == "Skipped a stroke line that is not a known op.")
+    }
+
+    @Test func anElementLineDoesNotPaintOrAddUndo() async throws {
+        let session = EditorSession()
+        session.createDocument(width: 32, height: 32, emptyLayer: true)
+        let element = StrokeElement(id: "stem-main", kind: .stem, layer: "Layer 1", parent: nil, anchor: nil,
+                                    centerline: [CGPoint(x: 4, y: 20), CGPoint(x: 4, y: 4)], attach: nil)
+        let before = session.history.undoCount
+        let applied = await session.playStrokeOp(.element(element), instant: true)
+        #expect(applied)
+        #expect(session.brushError == nil)
+        #expect(session.history.undoCount == before)
+    }
+
+    @Test func savingThePackageKeepsAnElementLine() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("CompositorElementSave-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let package = root.appendingPathComponent("Tagged.comp", isDirectory: true)
+        let session = EditorSession()
+        session.createDocument(width: 32, height: 32, emptyLayer: true)
+        try await ProjectStore.shared.save(try #require(session.projectSnapshot()), to: package)
+        let script = Data("{\"op\":\"element\",\"id\":\"stem-main\",\"kind\":\"stem\",\"layer\":\"Layer 1\",\"centerline\":[[1,2],[1,8]]}\n".utf8)
+        try script.write(to: package.appendingPathComponent(StrokeScriptReader.scriptName))
+        try Data("4\n".utf8).write(to: package.appendingPathComponent(StrokeScriptReader.cursorName))
+        try await ProjectStore.shared.save(try #require(session.projectSnapshot()), to: package)
+        #expect(try Data(contentsOf: package.appendingPathComponent(StrokeScriptReader.scriptName)) == script)
     }
 
     @Test func pauseContinuesAndAFinishedRecordingOffersPlayFromTheStart() {

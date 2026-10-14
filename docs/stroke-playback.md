@@ -116,6 +116,39 @@ Clears one layer back to empty pixels covering the canvas. One undo step, `Clear
 {"op":"clear","layer":"Petals"}
 ```
 
+### `element`
+
+Tags one layer as a part of a Sei & Shin template. Playback does not paint it, does not change the brush, and does not add an undo step. The cursor still moves past the line. The pixels are already on the layer. File > Export Sei & Shin Template reads every `element` line from the start of the file, including lines the cursor has already passed. A line that is not a valid element is skipped like any other unknown op; the exporter stops on that line and says which one.
+
+```json
+{"op":"element","id":"stem-main","kind":"stem","layer":"6F1D3C2A-0B7E-4E8A-9C4D-2A1B3C4D5E6F","centerline":[[420,900],[460,640],[520,280]]}
+{"op":"element","id":"camellia","kind":"flower","layer":"A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D","parent":"stem-main","attach":0.96}
+```
+
+`id` is the template's name for the part, and the exported PNG's file name. At most 64 characters: letters, numbers, hyphens, underscores. `kind` is `stem`, `flower`, `leaf`, `berry`, `grass`, `vessel`, `stone`, or `moss`. `layer` is that layer's UUID. A name is accepted and means the topmost layer with that name, which is the wrong choice once two layers share one. `parent` is another element's `id`, not a layer id. A flower, leaf, or berry names the stem it sits on. The other kinds have no parent.
+
+`centerline` is document pixels, the same space as `stroke` points, base first and tip last, at least two points, each segment longer than zero. A stem needs one. Nothing else may have one. The exporter uses the first point as the stem's anchor. An `anchor` on a stem line is left in the file and ignored. On any other kind, `anchor` is the pivot in document pixels; omit it and the pivot is the center of the layer. `attach` is 0…1 along the parent's centerline. Omit it and the child sits at the tip.
+
+Append lines. Do not rewrite the file. Each line needs its newline. `examples/SeiShinSample.comp` is a small tagged project: a stem, a flower, an untagged paper layer, and a Mac guide the exporter leaves out. Its `strokes.cursor` is past the end of the file, so Play has nothing to paint and the export still reads both tags.
+
+A Python script appends one tag like this:
+
+```python
+import json
+
+line = {
+    "op": "element",
+    "id": "stem-main",
+    "kind": "stem",
+    "layer": "6F1D3C2A-0B7E-4E8A-9C4D-2A1B3C4D5E6F",
+    "centerline": [[420, 900], [460, 640], [520, 280]],
+}
+with open("Arrangement.comp/strokes.jsonl", "a", encoding="utf-8") as script:
+    script.write(json.dumps(line, separators=(",", ":")) + "\n")
+```
+
+Then open the project and choose File > Export Sei & Shin Template. The template format is in [the ikebana spec](ios-ikebana-v1-spec.md).
+
 ## While it plays
 
 Nothing plays until Play. Opening a project, or appending lines while it is open, only marks the recording ready. Pause waits between points, so Play continues the same stroke. Closing the project during a stroke commits the points already drawn and does not resume that line. A line that has not started is left for the next Play. Clicks on the canvas wait until the line in progress finishes, including while playback is paused on that line.

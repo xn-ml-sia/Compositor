@@ -141,6 +141,26 @@ struct StrokeShape: Equatable, Sendable {
     var hatch: StrokeHatch?
 }
 
+/// One movable part of a Sei & Shin template, tagged in `strokes.jsonl` and ignored while the brushes play.
+/// Points are document pixels, the same space as a `stroke`. See docs/stroke-playback.md.
+struct StrokeElement: Equatable, Sendable {
+    enum Kind: String, Equatable, Sendable {
+        case stem, flower, leaf, berry, grass, vessel, stone, moss
+        var needsParent: Bool { self == .flower || self == .leaf || self == .berry }
+        var isRoot: Bool { self == .stem || self == .grass || self == .vessel || self == .stone || self == .moss }
+    }
+    var id: String
+    var kind: Kind
+    /// A layer UUID, or a layer name. A UUID is unambiguous; a name is the topmost layer with that name.
+    var layer: String
+    var parent: String?
+    /// Document pixels. A stem's exported anchor is the first centerline point, not this.
+    var anchor: CGPoint?
+    var centerline: [CGPoint]?
+    /// 0…1 along the parent's centerline. Omitted on a child means the tip.
+    var attach: CGFloat?
+}
+
 enum StrokeOp: Equatable, Sendable {
     case layer(name: String, id: UUID?)
     case brush(StrokeScriptBrush)
@@ -151,6 +171,7 @@ enum StrokeOp: Equatable, Sendable {
     case field(StrokeField)
     case flowLine(StrokeFlowLine)
     case figure(StrokeShape)
+    case element(StrokeElement)
 }
 
 struct StrokeScriptItem: Equatable, Sendable {
@@ -273,9 +294,64 @@ enum StrokeScriptReader {
             let pressure = double(object["pressure"]).map { CGFloat(min(1, max(0, $0))) }
             return .flowLine(StrokeFlowLine(layer: string(object["layer"]), x: CGFloat(x), y: CGFloat(y), length: CGFloat(max(0, length)),
                                             direction: CGFloat(direction), pressure: pressure, seed: seed(object["seed"]), pace: pace(object["pace"])))
+        case "element":
+            guard case .success(let element) = readElement(object) else { return nil }
+            return .element(element)
         default:
             return nil
         }
+    }
+
+    /// A valid `element` line, or why it is not one. Playback treats a failure as an unknown line and skips it.
+    /// Export fails on that same failure instead of dropping the part.
+    static func readElement(_ object: [String: Any]) -> Result<StrokeElement, String> {
+        guard let id = string(object["id"]) else { return .failure("An element needs an id.") }
+        guard id.count <= 64, let first = id.first, first.isLetter || first.isNumber,
+              id.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }) else {
+            return .failure("Element id “\(id)” has to be letters, numbers, hyphens, or underscores.")
+        }
+        guard let kindName = string(object["kind"]), let kind = StrokeElement.Kind(rawValue: kindName) else {
+            return .failure("Element “\(id)” needs a kind of stem, flower, leaf, berry, grass, vessel, stone, or moss.")
+        }
+        guard let layer = string(object["layer"]) else { return .failure("Element “\(id)” needs a layer.") }
+        let parent = string(object["parent"])
+        let anchor: CGPoint?
+        if object["anchor"] != nil {
+            guard let parsed = point(object["anchor"]) else { return .failure("Element “\(id)” has an anchor that is not a point.") }
+            anchor = parsed
+        } else {
+            anchor = nil
+        }
+        let centerline: [CGPoint]?
+        if object["centerline"] != nil {
+            guard let line = polygon(object["centerline"]), line.count >= 2 else {
+                return .failure("Element “\(id)” has a centerline that is not two or more points.")
+            }
+            for index in 1..<line.count where hypot(line[index].x - line[index - 1].x, line[index].y - line[index - 1].y) <= 0 {
+                return .failure("Element “\(id)” has a centerline segment of no length.")
+            }
+            centerline = line
+        } else {
+            centerline = nil
+        }
+        if kind == .stem, centerline == nil { return .failure("Stem “\(id)” needs a centerline.") }
+        if kind != .stem, centerline != nil { return .failure("Element “\(id)” is a \(kindName), so it cannot have a centerline.") }
+        let attach: CGFloat?
+        if object["attach"] != nil {
+            guard let value = double(object["attach"]), value.isFinite, (0...1).contains(value) else {
+                return .failure("Element “\(id)” has an attach that is not from 0 to 1.")
+            }
+            attach = CGFloat(value)
+        } else {
+            attach = nil
+        }
+        return .success(StrokeElement(id: id, kind: kind, layer: layer, parent: parent, anchor: anchor, centerline: centerline, attach: attach))
+    }
+
+    private static func point(_ value: Any?) -> CGPoint? {
+        guard let coords = value as? [Any], coords.count >= 2, let x = double(coords[0]), let y = double(coords[1]),
+              x.isFinite, y.isFinite else { return nil }
+        return CGPoint(x: x, y: y)
     }
 
     /// New ops after the cursor, and the offset at the end of the last complete line (comments included).
