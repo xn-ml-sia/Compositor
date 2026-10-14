@@ -141,6 +141,12 @@ struct StrokeShape: Equatable, Sendable {
     var hatch: StrokeHatch?
 }
 
+/// `Result` requires its failure to be an `Error`. The text is what export shows for that line.
+nonisolated struct StrokeElementFailure: Error, CustomStringConvertible {
+    var description: String
+    init(_ description: String) { self.description = description }
+}
+
 /// One movable part of a Sei & Shin template, tagged in `strokes.jsonl` and ignored while the brushes play.
 /// Points are document pixels, the same space as a `stroke`. See docs/stroke-playback.md.
 struct StrokeElement: Equatable, Sendable {
@@ -304,20 +310,20 @@ enum StrokeScriptReader {
 
     /// A valid `element` line, or why it is not one. Playback treats a failure as an unknown line and skips it.
     /// Export fails on that same failure instead of dropping the part.
-    static func readElement(_ object: [String: Any]) -> Result<StrokeElement, String> {
-        guard let id = string(object["id"]) else { return .failure("An element needs an id.") }
+    static func readElement(_ object: [String: Any]) -> Result<StrokeElement, StrokeElementFailure> {
+        guard let id = string(object["id"]) else { return .failure(StrokeElementFailure("An element needs an id.")) }
         guard id.count <= 64, let first = id.first, first.isLetter || first.isNumber,
               id.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }) else {
-            return .failure("Element id “\(id)” has to be letters, numbers, hyphens, or underscores.")
+            return .failure(StrokeElementFailure("Element id “\(id)” has to be letters, numbers, hyphens, or underscores."))
         }
         guard let kindName = string(object["kind"]), let kind = StrokeElement.Kind(rawValue: kindName) else {
-            return .failure("Element “\(id)” needs a kind of stem, flower, leaf, berry, grass, vessel, stone, or moss.")
+            return .failure(StrokeElementFailure("Element “\(id)” needs a kind of stem, flower, leaf, berry, grass, vessel, stone, or moss."))
         }
-        guard let layer = string(object["layer"]) else { return .failure("Element “\(id)” needs a layer.") }
+        guard let layer = string(object["layer"]) else { return .failure(StrokeElementFailure("Element “\(id)” needs a layer.")) }
         let parent = string(object["parent"])
         let anchor: CGPoint?
         if object["anchor"] != nil {
-            guard let parsed = point(object["anchor"]) else { return .failure("Element “\(id)” has an anchor that is not a point.") }
+            guard let parsed = point(object["anchor"]) else { return .failure(StrokeElementFailure("Element “\(id)” has an anchor that is not a point.")) }
             anchor = parsed
         } else {
             anchor = nil
@@ -325,21 +331,21 @@ enum StrokeScriptReader {
         let centerline: [CGPoint]?
         if object["centerline"] != nil {
             guard let line = polygon(object["centerline"]), line.count >= 2 else {
-                return .failure("Element “\(id)” has a centerline that is not two or more points.")
+                return .failure(StrokeElementFailure("Element “\(id)” has a centerline that is not two or more points."))
             }
             for index in 1..<line.count where hypot(line[index].x - line[index - 1].x, line[index].y - line[index - 1].y) <= 0 {
-                return .failure("Element “\(id)” has a centerline segment of no length.")
+                return .failure(StrokeElementFailure("Element “\(id)” has a centerline segment of no length."))
             }
             centerline = line
         } else {
             centerline = nil
         }
-        if kind == .stem, centerline == nil { return .failure("Stem “\(id)” needs a centerline.") }
-        if kind != .stem, centerline != nil { return .failure("Element “\(id)” is a \(kindName), so it cannot have a centerline.") }
+        if kind == .stem, centerline == nil { return .failure(StrokeElementFailure("Stem “\(id)” needs a centerline.")) }
+        if kind != .stem, centerline != nil { return .failure(StrokeElementFailure("Element “\(id)” is a \(kindName), so it cannot have a centerline.")) }
         let attach: CGFloat?
         if object["attach"] != nil {
             guard let value = double(object["attach"]), value.isFinite, (0...1).contains(value) else {
-                return .failure("Element “\(id)” has an attach that is not from 0 to 1.")
+                return .failure(StrokeElementFailure("Element “\(id)” has an attach that is not from 0 to 1."))
             }
             attach = CGFloat(value)
         } else {

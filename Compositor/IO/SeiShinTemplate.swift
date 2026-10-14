@@ -147,7 +147,7 @@ enum SeiShinTemplateExporter {
             guard object["op"] as? String == "element" else { continue }
             switch StrokeScriptReader.readElement(object) {
             case .success(let element): elements.append(element)
-            case .failure(let reason): throw SeiShinTemplateError.rule("strokes.jsonl line \(lineNumber): \(reason)")
+            case .failure(let reason): throw SeiShinTemplateError.rule("strokes.jsonl line \(lineNumber): \(reason.description)")
             }
         }
         return elements
@@ -203,7 +203,7 @@ enum SeiShinTemplateExporter {
         if let blend = item.layer.blendMode, blend != .normal {
             warnings.append("Layer \(item.layer.name) uses \(blend.rawValue). The template keeps its pixels and draws them in Normal.")
         }
-        var image = try image(from: context)
+        var image = try renderedImage(context)
         var transform = item.layer.transform
         if transform.flipY {
             image = try flippedVertically(image)
@@ -219,7 +219,7 @@ enum SeiShinTemplateExporter {
             }
             let baked = try BrushRaster.context(width: width, height: height, mask: false)
             draw(image, into: baked, rect: CGRect(x: 0, y: 0, width: width, height: height))
-            image = try image(from: baked)
+            image = try renderedImage(baked)
             let center = transform.center
             transform.size = CGSize(width: width, height: height)
             transform.origin = CGPoint(x: center.x - transform.size.width / 2, y: center.y - transform.size.height / 2)
@@ -458,15 +458,17 @@ enum SeiShinTemplateExporter {
             top.copyMemory(from: bottom, byteCount: stride)
             bottom.copyMemory(from: row, byteCount: stride)
         }
-        return try image(from: context)
+        return try renderedImage(context)
     }
 
     private static func crop(_ image: CGImage, to trim: CGRect) throws -> CGImage {
         let width = max(1, Int(trim.width.rounded()))
         let height = max(1, Int(trim.height.rounded()))
         let context = try BrushRaster.context(width: width, height: height, mask: false)
-        BrushRaster.draw(image, in: CGRect(x: -trim.minX, y: -trim.minY, width: image.width, height: image.height), mask: false, context: context)
-        return try image(from: context)
+        // Width and height are pixel counts. Passing those Ints beside CGFloat origins makes the
+        // integer CGRect initializer win, and the origins then fail to type-check.
+        BrushRaster.draw(image, in: CGRect(x: -trim.minX, y: -trim.minY, width: CGFloat(image.width), height: CGFloat(image.height)), mask: false, context: context)
+        return try renderedImage(context)
     }
 
     private static func draw(_ image: CGImage, into context: CGContext, rect: CGRect) {
@@ -478,7 +480,7 @@ enum SeiShinTemplateExporter {
         context.restoreGState()
     }
 
-    private static func image(from context: CGContext) throws -> CGImage {
+    private static func renderedImage(_ context: CGContext) throws -> CGImage {
         guard let image = context.makeImage() else { throw SeiShinTemplateError.encode }
         return image
     }
