@@ -11,8 +11,11 @@ struct ContentView: View {
     @State private var levelsPanel = FloatingPanelController(name: "levelsPanel")
     @State private var adjustmentPanel = FloatingPanelController(name: "adjustmentPanel")
     @State private var selectionAmountPanel = FloatingPanelController(name: "selectionAmountPanel")
+    @State private var colorRangePanel = FloatingPanelController(name: "colorRangePanel")
     @State private var filterPanel = FloatingPanelController(name: "filterPanel")
     @State private var effectsPanel = FloatingPanelController(name: "effectsPanel")
+    @State private var watercolorPanel = FloatingPanelController(name: "watercolorPanel")
+    @State private var hatchPanel = FloatingPanelController(name: "hatchPanel")
     @State private var isDropTargeted = false
     /// The window's width, so the tab strip can use the toolbar's free space.
     @State private var windowWidth: CGFloat = 1180
@@ -78,6 +81,10 @@ struct ContentView: View {
     @ViewBuilder private var editorStack: some View {
         VStack(spacing: 0) {
             toolHeaders
+            if session.hasStrokeScript {
+                StrokePlaybackBar(session: session) { applicationDelegate?.projects.toggleStrokePlayback() }
+                Divider()
+            }
             HStack(spacing: 0) {
                 toolRail
                 Divider()
@@ -97,6 +104,12 @@ struct ContentView: View {
                         ZStack {
                             EditorCanvas(session: session)
                             if session.document == nil { welcome }
+                            if let layer = session.maskAloneLayer {
+                                // At the foot of the canvas, clear of the transform box's rotation handle.
+                                MaskAloneBadge(session: session, layer: layer).fixedSize()
+                                    .padding(.bottom, 14)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                            }
                         }
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("editor")) } action: { canvasFrame = $0 }
                     }
@@ -204,6 +217,13 @@ struct ContentView: View {
                 levelsPanel.show(title: "Levels", content: LevelsSheet(session: session))
             }
         }
+        .onChange(of: session.colorRange == nil) { _, closed in
+            if closed { colorRangePanel.close() }
+            else {
+                colorRangePanel.onClose = { session.cancelColorRange() }
+                colorRangePanel.show(title: "Color Range", content: ColorRangeSheet(session: session))
+            }
+        }
         .onChange(of: session.hueSaturation == nil) { _, closed in
             if closed { adjustmentPanel.close() }
             else {
@@ -232,6 +252,18 @@ struct ContentView: View {
                     content: SelectionAmountSheet(session: session, operation: operation))
             } else { selectionAmountPanel.close() }
         }
+        .onChange(of: session.showWatercolorOptions) { _, show in
+            if show {
+                watercolorPanel.onClose = { session.showWatercolorOptions = false }
+                watercolorPanel.show(title: "Watercolor Fill", content: WatercolorOptionsSheet(session: session))
+            } else { watercolorPanel.close() }
+        }
+        .onChange(of: session.showHatchOptions) { _, show in
+            if show {
+                hatchPanel.onClose = { session.showHatchOptions = false }
+                hatchPanel.show(title: "Hatch", content: HatchOptionsSheet(session: session))
+            } else { hatchPanel.close() }
+        }
         .onChange(of: session.filterEdit == nil) { _, closed in
             if closed { filterPanel.close() }
             else {
@@ -254,7 +286,8 @@ struct ContentView: View {
         }
         .alert("Import couldn’t finish", isPresented: Binding(
             get: { session.importError != nil }, set: { if !$0 { session.importError = nil } })) {
-                Button("OK", role: .cancel) { session.importError = nil }
+                // No cancel role: an alert with only a cancel button gets a second OK of its own.
+                Button("OK") { session.importError = nil }
             } message: { Text(session.importError ?? "") }
         .alert("Couldn’t paint", isPresented: Binding(get: { session.brushError != nil },
             set: { if !$0 { session.brushError = nil } })) {

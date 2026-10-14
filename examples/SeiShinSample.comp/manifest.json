@@ -1,0 +1,70 @@
+{
+  "format": "com.compositor.project",
+  "version": 11,
+  "colorSpace": "sRGB",
+  "documentID": "0C5E7A91-3B2D-4F6A-8E1C-9D0B7A6F5E4D",
+  "width": 40,
+  "height": 60,
+  "resolution": 72,
+  "activeLayerID": "A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D",
+  "guides": [
+    {
+      "id": "D4E5F6A7-B8C9-4D0E-8F2A-3B4C5D6E7F80",
+      "axis": "horizontal",
+      "position": 20
+    }
+  ],
+  "layers": [
+    {
+      "id": "B2C3D4E5-F6A7-4B8C-9D0E-1F2A3B4C5D6E",
+      "name": "Paper",
+      "imageFile": "B2C3D4E5-F6A7-4B8C-9D0E-1F2A3B4C5D6E.png",
+      "isVisible": true,
+      "isGroup": false,
+      "opacity": 1,
+      "blendMode": "Normal",
+      "transform": {
+        "origin": [0, 0],
+        "size": [40, 60],
+        "rotation": 0,
+        "flipX": false,
+        "flipY": false,
+        "sampling": "High quality"
+      }
+    },
+    {
+      "id": "6F1D3C2A-0B7E-4E8A-9C4D-2A1B3C4D5E6F",
+      "name": "Stem",
+      "imageFile": "6F1D3C2A-0B7E-4E8A-9C4D-2A1B3C4D5E6F.png",
+      "isVisible": true,
+      "isGroup": false,
+      "opacity": 1,
+      "blendMode": "Normal",
+      "transform": {
+        "origin": [10, 10],
+        "size": [10, 30],
+        "rotation": 0,
+        "flipX": false,
+        "flipY": false,
+        "sampling": "High quality"
+      }
+    },
+    {
+      "id": "A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D",
+      "name": "Camellia",
+      "imageFile": "A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D.png",
+      "isVisible": true,
+      "isGroup": false,
+      "opacity": 1,
+      "blendMode": "Normal",
+      "transform": {
+        "origin": [20, 8],
+        "size": [8, 8],
+        "rotation": 0,
+        "flipX": false,
+        "flipY": false,
+        "sampling": "High quality"
+      }
+    }
+  ]
+}

@@ -11,6 +11,23 @@ struct BrushControls: View {
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
                 .help("Paint with the foreground color (B), or erase pixels away (E)")
+                Picker("Brush", selection: $session.brushSettings.natural) {
+                    ForEach(NaturalBrushKind.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.menu).fixedSize()
+                .help("Round is the smooth tip. The others are natural-media brushes ported from p5.brush. A tablet uses pen pressure; a mouse uses speed.")
+                Picker("Field", selection: Binding(get: { session.flowField?.name ?? "none" }, set: { session.applyFlowField(name: $0, wiggle: session.flowWiggle, seed: 1) })) {
+                    Text("None").tag("none")
+                    ForEach(FlowField.builtInNames, id: \.self) { Text($0.capitalized).tag($0) }
+                }
+                .pickerStyle(.menu).fixedSize()
+                .help("Steers live strokes along a p5.brush flow field. None leaves the pointer alone.")
+                if session.brushSettings.natural != .round {
+                    Text("Wiggle")
+                        .scrubbable(sensitivity: 0.02, value: $session.brushSettings.wiggle, range: 0...2)
+                    Slider(value: $session.brushSettings.wiggle, in: 0...2).frame(width: 72)
+                        .help("Pushes the stroke off the pointer, like p5.brush's flow-field wiggle. 0 stays on the line.")
+                }
             }
             if session.tool == .blur {
                 Picker("Mode", selection: $session.blurMode) {
@@ -67,6 +84,21 @@ struct BrushControls: View {
                             change: { session.brushSettings.opacity = CGFloat(min(100, max(1, $0)) / 100) })
                 .help("Press 1–9 for 10–90%, 0 for 100%")
                 .unitSuffix("%")
+            // Blur softens by a radius of its own, apart from how strongly it lays the softening down.
+            if session.tool == .blur, session.blurMode == .blur {
+                Text("Radius").scrubbable(sensitivity: 0.1, value: $session.brushSettings.blurRadius, range: 0.5...50)
+                // The slider covers everyday radii; typing or scrubbing reaches up to 50.
+                Slider(value: Binding(get: { min(20, session.brushSettings.blurRadius) },
+                                      set: { session.brushSettings.blurRadius = $0 }), in: 0.5...20).frame(width: 100)
+                TextField("Radius", value: Binding<Double>(get: { Double(session.brushSettings.blurRadius) },
+                    set: { session.brushSettings.blurRadius = $0.isFinite ? CGFloat(min(50, max(0.5, $0))) : 5 }),
+                    format: .number.precision(.fractionLength(0...1)))
+                    .frame(width: 42).textFieldStyle(.roundedBorder)
+                    .arrowSteps(value: { Double(session.brushSettings.blurRadius) },
+                                change: { session.brushSettings.blurRadius = CGFloat(min(50, max(0.5, $0))) })
+                    .help("How far the blur softens, in pixels")
+                    .unitSuffix("px")
+            }
             // Paint and Erase only: healing, cloning and smearing have their own feel.
             if session.tool == .brush {
                 Text("Smoothing")

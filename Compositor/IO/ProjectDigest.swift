@@ -8,6 +8,9 @@ import Foundation
 /// Assets are not read: every save and open takes a fresh digest, and hashing every image of a large project would
 /// hold each save for seconds. Anything that edits a project rewrites its manifest, and a PNG whose pixels change
 /// all but always changes size, so names and sizes catch the rest from the file system alone.
+///
+/// `strokes.jsonl` and `strokes.cursor` are omitted. A stroke script is played into the open document, and hashing
+/// it would reload the project and throw away undo.
 nonisolated struct ProjectDigest: Equatable, Sendable {
     let value: Data
 
@@ -24,8 +27,8 @@ nonisolated struct ProjectDigest: Equatable, Sendable {
             let values = try images.appendingPathComponent(name).resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
             guard values.isRegularFile == true else { continue }
             hasher.update(data: Data(name.utf8))
-            var count = UInt64(values.fileSize ?? 0)
-            hasher.update(bufferPointer: UnsafeRawBufferPointer(start: &count, count: MemoryLayout<UInt64>.size))
+            let count = UInt64(values.fileSize ?? 0)
+            withUnsafeBytes(of: count) { hasher.update(bufferPointer: $0) }
         }
         return ProjectDigest(value: Data(hasher.finalize()))
     }
