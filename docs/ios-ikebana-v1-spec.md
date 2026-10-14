@@ -11,7 +11,7 @@ This document is the product and the technical spec. It describes the Mac `.comp
 - Nothing is rooted. The vessel, stones, moss, grass, and every stem move freely on the canvas.
 - Transforms: move, rotate, uniform scale, horizontal flip, bend a stem, duplicate, delete, undo, redo.
 - The picture on screen is the pre-rendered artwork. Bending warps the stem's image along its centerline. iOS does not run a brush engine.
-- Heaven, human, and earth guide lines can be shown. They are off by default.
+- Shin, Soe, and Hikae (heaven, human, earth) can be shown as angled rays from the vessel mouth. They are off by default.
 - The arrangement autosaves. The person can export a PNG.
 
 ## Non-goals (v1)
@@ -45,7 +45,7 @@ These facts change the model the phone would otherwise inherit:
 - **A folder is not a stem.** Version 2 `parentID` must point at a group. A group has no image and is pass-through: children are drawn on their own, not as one picture. Selecting a folder on the Mac rewrites each descendant's own `transform` (`LayerTransform.following`). That is an affine edit in one session. It is not a saved parent-relative constraint, and it cannot bend. iOS parent links are new data in the template. They are not `.comp` `parentID`s.
 - **Tags do not belong in `manifest.json`.** The app re-encodes `ProjectLayerRecord` on save, so unknown manifest keys are dropped. An extra file in the package is dropped too: the atomic save writes only `manifest.json`, `images/`, `QuickLook/`, `strokes.jsonl`, and `strokes.cursor`.
 - **Tags do belong in `strokes.jsonl`.** Unknown keys on a known op are ignored. An unknown `op` is skipped. The bytes survive the next save. The exporter reads the file from byte 0 and ignores `strokes.cursor`.
-- **Mac guides are not ikebana lines.** Version 8 `guides` are unnamed horizontal or vertical lines (`id`, `axis`, `position` in document pixels). They are not drawn into a PNG export.
+- **Mac guides are not these rays.** Version 8 `guides` are unnamed horizontal or vertical lines (`id`, `axis`, `position` in document pixels). The exporter does not read them. Ikebana guide angles and lengths are authored on the template, not in the `.comp`.
 - **Mac PNG export** (`ImageExporter.pngData`) is the canvas in pixels, sRGB, alpha kept, guides omitted, DPI from `resolution` or 72. Quick Look's JPEG is a different thing (flattened on white, long side ≤ 1024).
 - **Nothing on the Mac bends a centerline.** `MetalWarp` is smudge and liquify. `DistortWarp` is a four-corner distort. Neither is a ribbon warp, and neither shader should be copied to iOS.
 
@@ -57,7 +57,7 @@ These facts change the model the phone would otherwise inherit:
 4. **Place.** Drag the body to move. Pinch to scale. Twist with two fingers to rotate. Flip with the flip button. On a stem, drag the tip handle to bend. Children follow through all of these.
 5. **Duplicate or delete.** A small menu on the selection offers Duplicate and Delete. Duplicate copies the selected root and everything it owns, nudged down-right, and selects the copy. Delete removes that root and everything it owns.
 6. **Undo, redo, reset.** Undo and redo step through committed edits in this session. Reset, behind a confirm, restores the template's rest pose.
-7. **Guides.** A toggle shows heaven, human, and earth when the template has them. The toggle is remembered on the phone, not in the arrangement. Guides are not exported.
+7. **Guides.** A toggle shows Shin, Soe, and Hikae when the template defines them. A second toggle mirrors the rays left/right. The origin, at the vessel mouth, can be dragged. Visibility, mirror, and the dragged origin are remembered on the phone per template. They are not part of the arrangement and are not exported.
 8. **Export.** Share writes one PNG and presents the system share sheet. The arrangement is already saved.
 
 One finger never both moves and bends: the finger either started on the tip handle or it did not. Two fingers never move the element and never bend it.
@@ -114,11 +114,15 @@ Camellia.ikebana/
   "id": "camellia-slanted",
   "name": "Camellia, slanted",
   "canvas": { "width": 1170, "height": 2000 },
-  "guides": [
-    { "role": "heaven", "axis": "horizontal", "position": 420 },
-    { "role": "human", "axis": "horizontal", "position": 980 },
-    { "role": "earth", "axis": "horizontal", "position": 1500 }
-  ],
+  "guides": {
+    "origin": [640, 1580],
+    "shinLength": 900,
+    "rays": [
+      { "role": "shin", "angle": 12, "length": 1, "marker": "circle" },
+      { "role": "soe", "angle": -45, "length": 0.75, "marker": "square" },
+      { "role": "hikae", "angle": 75, "length": 0.5, "marker": "triangle" }
+    ]
+  },
   "elements": [
     {
       "id": "stem-main",
@@ -159,7 +163,11 @@ For every element:
 - `scale` is uniform. `1` means one image pixel per canvas pixel.
 - `centerline` is required for `stem`, forbidden otherwise. At least two points, in local image pixels, base first, tip last. Segment lengths must be positive. It should run through the opaque art. The exporter warns if an opaque pixel's nearest centerline point is farther than the stem's own half-width pad (see Bend).
 
-`guides` is omitted when the template has none. Roles are only `heaven`, `human`, and `earth`. `position` is a canvas pixel (y for horizontal, x for vertical).
+`guides` is omitted when the template has none. It is not derived from the Mac document's `guides` array. The exporter leaves an existing `guides` object in place when it rewrites a template.
+
+`origin` is the vessel mouth in canvas pixels. `shinLength` is Shin's length in those same pixels. Each ray's `length` is a fraction of `shinLength`: Shin 1, Soe 3/4, Hikae 1/2. `angle` is degrees off straight up, positive clockwise (to the right on screen). The unmirrored example is the front elevation (立面図): Shin 12° off vertical, inside the usual 10°–15° lean; Soe at 45° on the opposite side of vertical; Hikae at 75° on the other side from Soe, the side Shin leans toward. The app draws the stored angles and does not clamp them. Markers are Shin's circle (真), Soe's square (副), and Hikae's triangle (控). The top plan in the same diagram is not a second set of rays, and the shorter side stems are not guides.
+
+On the phone the three rays are faint dashed lines from the origin to those lengths, with a small marker at each end. They do not snap. Mirror negates every angle and leaves lengths alone. Dragging the origin moves only that point; it starts at the template `origin`. Visibility (off by default), mirror (off by default), and a dragged origin are device state per template id, not fields of the arrangement file.
 
 Images are 8-bit sRGB PNG, RGBA, trimmed to the opaque bounding box so a full-canvas layer does not become a full-canvas texture. Long side of the canvas and of any image is at most 2048. The exporter refuses a larger source rather than downsampling in secret.
 
@@ -205,6 +213,7 @@ The canvas is aspect-fitted to the portrait screen. Pinch and twist never zoom o
 | Tap | topmost sprite whose pixel alpha is ≥ 16, else empty paper | Select that root, or the parent stem if the sprite is a child. Empty clears the selection. |
 | One-finger drag, not on the tip handle | the root under the finger (a child counts as its stem). The drag selects it. | Translate that root's anchor. Its children follow. A drag on empty paper does nothing. |
 | One-finger drag starting on the tip handle | selected stem | Bend. The handle is a 44 pt square around the current tip, hit-tested before the body. |
+| One-finger drag starting on the guide origin | the mouth point, and only while guides are visible | Move the guide origin. A 44 pt hit target, tested before any element. Not an arrangement edit: no undo step, no arrangement autosave. |
 | Pinch | selected root | Uniform scale about the anchor. |
 | Two-finger twist | selected root | Add the twist angle to `rotation`, about the anchor. |
 | Flip button | selected root | Toggle horizontal flip about the anchor and negate `rotation`, matching Mac `flipLayers(horizontally: true)`. |
@@ -218,11 +227,11 @@ Conflict rules:
 - Pinch and twist run together. They do not translate and they do not bend.
 - A second finger cancels a one-finger move or bend that has not been committed; the element returns to where the gesture began. The two-finger gesture then proceeds.
 - The tip handle wins over the body only when the touch *begins* inside the handle. Sliding onto the tip during a move does not start a bend.
-- Guides are not hit targets and do not snap.
+- Guide rays are not hit targets and do not snap. The origin handle is the only guide hit, and only while the rays are visible. It wins over a stem underneath.
 - Children are never the selected object, so they have no handle and no menu.
 - Scale and rotation stay on the anchor, not the finger centroid, so a stem grows from its base and a vessel grows from its middle. The fingers will not stay glued to the same pixels. That is the trade for a pivot that matches the plant.
 
-A gesture commits on finger-up: one undo step, then autosave. Movement during the gesture is a preview and is not saved on its own.
+An arrangement gesture commits on finger-up: one undo step, then autosave. Movement during the gesture is a preview and is not saved on its own. Dragging the guide origin does not.
 
 ## Bend
 
@@ -339,12 +348,12 @@ Portrait only. One arrangement on screen. No brush, no document browser beyond t
 
 Each milestone is usable on its own. Later ones do not reopen the format except to fill fields the earlier milestone left at rest.
 
-1. **Mac export, three templates.** `element` lines in three real `.comp` projects. Exporter writes `.ikebana` packages: trimmed PNGs, parent links, anchors, z-order, stem centerlines, guides mapped from the project's horizontal guides. A template that violates the authoring rules fails with a specific message. iOS is not required to draw yet. Convert three arrangements that already look right on the Mac canvas.
+1. **Mac export, three templates.** `element` lines in three real `.comp` projects. Exporter writes `.ikebana` packages: trimmed PNGs, parent links, anchors, z-order, stem centerlines. It does not read Mac guides. `guides` is authored on the template, and a re-export keeps that object. A template that violates the authoring rules fails with a specific message. iOS is not required to draw yet. Convert three arrangements that already look right on the Mac canvas.
 2. **Canvas: select, move, scale, rotate, flip.** Bundled templates drawn with Metal as affine sprites (bend identity). Hit testing, the gesture table except the tip handle, children following a rigid stem. Paper background. Portrait iPhone.
 3. **Bend.** Tip handle, FABRIK, mesh warp, children riding `attach`. Rest pose stays the PNG. The stretch behavior above is what "done" means: length held, flower not smeared.
 4. **Duplicate, delete, undo, redo, reset.** Session undo stack. Children duplicate and delete with the stem.
 5. **Autosave and PNG export.** Write the arrangement on commit. Relaunch restores it. Share sheet PNG at template pixel size over paper, guides omitted.
-6. **Guides.** Map Mac guides into the template. Toggle off by default, remembered on device, not in the PNG and not in the arrangement JSON.
+6. **Guides.** Draw the template's Shin, Soe, and Hikae rays: faint dashes, circle / square / triangle markers, origin drag, mirror toggle. Off by default, remembered on device, not in the PNG and not in the arrangement JSON.
 
 ## Open questions and risks
 
@@ -355,7 +364,6 @@ Each milestone is usable on its own. Later ones do not reopen the format except 
 - **Outside stretch.** A thick branch or a flower left inside the stem texture will smear on a hard bend. The exporter warning for opaque pixels far from the centerline is the mitigation. It is a warning, not a refusal, so a slightly wide stem still exports.
 - **Alpha hit testing.** Correct for *ma*, more work than bounding boxes. If a texture readback shows up in profiles, cache a small alpha mask per element on load. Do not fall back to the bounding box; the box fills the negative space the design is about.
 - **Non-uniform art.** Mac layers can be scaled differently in x and y. Baking that into the PNG on export avoids a second scale on the phone. Confirm the three templates do not rely on a live non-uniform box.
-- **Guide mapping.** Mac guides have no names. The exporter sorts horizontal guides by `position` and assigns heaven, human, earth from top to bottom, and only when there are exactly three. Any other count omits guides. Vertical guides are ignored. A template that wants a slanted heaven line cannot get it from a Mac guide; add the line by hand in the template manifest if that comes up.
 - **Template drift.** Autosave keys off template id and element id. Replacing a PNG without changing ids will move saved arrangements relative to the new art. Ship art changes as a new id.
 - **Paper versus Mac PNG.** Reviewers comparing an iOS export to `ImageExporter` output will see a filled background and no alpha. That is specified, not a bug.
 - **Color.** Author and export in sRGB, and tag the textures sRGB, so the phone does not shift the watercolor into Display P3.
