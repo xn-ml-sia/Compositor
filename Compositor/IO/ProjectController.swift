@@ -191,7 +191,7 @@ final class ProjectController {
     }
 
     /// Writes a Sei & Shin template from the open document's pixels and the package's `strokes.jsonl`.
-    /// The project has to be saved: the element tags live in that file, which a save copies through unchanged.
+    /// The project has to be saved: the element tags and the guides line live in that file, which a save copies through unchanged.
     func exportSeiShinTemplate() async {
         guard session.document != nil, let package = session.projectURL, begin() else { return }
         defer { session.isProjectBusy = false }

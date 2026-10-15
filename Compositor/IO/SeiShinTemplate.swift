@@ -8,8 +8,10 @@ extension UTType {
 }
 
 /// A Sei & Shin template folder (`.ikebana`) written from a Compositor project.
-/// Element tags are read from `strokes.jsonl` from the first byte. Mac alignment guides are not.
-/// An existing template's `guides` object is kept when the same folder is exported again.
+/// Element tags and an optional guides line are read from `strokes.jsonl` from the first byte.
+/// Mac alignment guides are not. A guides line is written into the template and replaces an object
+/// already there. Without one, an existing template `guides` object is kept. With neither, the
+/// vessel mouth and the tallest stem supply the standard rays.
 enum SeiShinTemplateExporter {
     static let format = "com.seiandshin.template"
     static let version = 1
@@ -24,8 +26,8 @@ enum SeiShinTemplateExporter {
         if destination.pathExtension.lowercased() != "ikebana" {
             destination = destination.appendingPathExtension("ikebana")
         }
-        let guides = try preservedGuides(at: destination)
-        let elements = try readElements(script)
+        let tags = try readScript(script)
+        let elements = tags.elements
         guard !elements.isEmpty else { throw SeiShinTemplateError.noElements }
         guard snapshot.manifest.width <= maxSide, snapshot.manifest.height <= maxSide else {
             throw SeiShinTemplateError.rule("This canvas is \(snapshot.manifest.width)×\(snapshot.manifest.height). A Sei & Shin template is at most \(maxSide) pixels on a side.")
@@ -65,6 +67,8 @@ enum SeiShinTemplateExporter {
         }
         let order = layers.enumerated().reduce(into: [UUID: Int]()) { $0[$1.element.id] = $1.offset }
         let sorted = resolved.sorted { (order[$0.layer.id] ?? 0) < (order[$1.layer.id] ?? 0) }
+        // Before the pixel work, so an unreadable guides object on the template fails without rewriting it.
+        let guides = try guidesObject(authored: tags.guides, at: destination, elements: sorted)
         var warnings: [String] = []
         var prepared: [UUID: Prepared] = [:]
         for item in sorted {
@@ -125,8 +129,14 @@ enum SeiShinTemplateExporter {
         var layer: ProjectLayerRecord
     }
 
-    private static func readElements(_ script: Data) throws -> [StrokeElement] {
+    private struct ScriptTags {
+        var elements: [StrokeElement]
+        var guides: StrokeGuides?
+    }
+
+    private static func readScript(_ script: Data) throws -> ScriptTags {
         var elements: [StrokeElement] = []
+        var guides: StrokeGuides?
         var lineNumber = 0
         var cursor = script.startIndex
         while cursor < script.endIndex {
@@ -142,15 +152,28 @@ enum SeiShinTemplateExporter {
                 if text.range(of: #""op"\s*:\s*"element""#, options: .regularExpression) != nil {
                     throw SeiShinTemplateError.rule("strokes.jsonl line \(lineNumber): this element line is not valid JSON.")
                 }
+                if text.range(of: #""op"\s*:\s*"guides""#, options: .regularExpression) != nil {
+                    throw SeiShinTemplateError.rule("strokes.jsonl line \(lineNumber): this guides line is not valid JSON.")
+                }
                 continue
             }
-            guard object["op"] as? String == "element" else { continue }
-            switch StrokeScriptReader.readElement(object) {
-            case .success(let element): elements.append(element)
-            case .failure(let reason): throw SeiShinTemplateError.rule("strokes.jsonl line \(lineNumber): \(reason.description)")
+            switch object["op"] as? String {
+            case "element":
+                switch StrokeScriptReader.readElement(object) {
+                case .success(let element): elements.append(element)
+                case .failure(let reason): throw SeiShinTemplateError.rule("strokes.jsonl line \(lineNumber): \(reason.description)")
+                }
+            case "guides":
+                // The file is append-only, so a later line is the correction and replaces the earlier one whole.
+                switch StrokeScriptReader.readGuides(object) {
+                case .success(let parsed): guides = parsed
+                case .failure(let reason): throw SeiShinTemplateError.rule("strokes.jsonl line \(lineNumber): \(reason.description)")
+                }
+            default:
+                continue
             }
         }
-        return elements
+        return ScriptTags(elements: elements, guides: guides)
     }
 
     private static func layer(_ token: String, in layers: [ProjectLayerRecord]) -> ProjectLayerRecord? {
@@ -377,7 +400,62 @@ enum SeiShinTemplateExporter {
         return Double(rounded)
     }
 
-    // MARK: - Guides already on the template
+    // MARK: - Guides
+
+    /// Script guides are the source of truth. Otherwise a template that already has guides keeps
+    /// them, so a re-export does not overwrite rays written by hand. With neither, the vessel mouth
+    /// and the tallest stem supply the standard rays.
+    private static func guidesObject(authored: StrokeGuides?, at url: URL, elements: [Resolved]) throws -> Any? {
+        if let authored { return manifestGuides(authored) }
+        if let preserved = try preservedGuides(at: url) { return preserved }
+        guard let mouth = vesselMouth(in: elements), let length = tallestStemLength(elements) else { return nil }
+        return manifestGuides(StrokeGuides(origin: mouth, shinLength: length, rays: StrokeGuides.standardRays))
+    }
+
+    private static func manifestGuides(_ guides: StrokeGuides) -> [String: Any] {
+        [
+            "origin": [number(guides.origin.x), number(guides.origin.y)],
+            "shinLength": number(guides.shinLength),
+            "rays": guides.rays.map { ray in
+                ["role": ray.role, "angle": number(ray.angle), "length": number(ray.length), "marker": ray.marker] as [String: Any]
+            }
+        ]
+    }
+
+    /// Midpoint of the top edge of the vessel layer's bounds. `point` rotates that edge about the
+    /// center, so the mouth stays on the rim when the vase is turned. The topmost vessel is the one
+    /// in front. Flips mirror pixels inside the same bounds and do not move this point. Empty pixels
+    /// inside the box count: the mouth is the bounds, not the trimmed art.
+    private static func vesselMouth(in elements: [Resolved]) -> CGPoint? {
+        guard let vessel = elements.last(where: { $0.element.kind == .vessel }) else { return nil }
+        return vessel.layer.transform.point(CGPoint(x: 0.5, y: 0))
+    }
+
+    /// Centerline length, in document pixels, of the stem that rises the farthest. Height is the
+    /// vertical span, so a long stem that leans over loses to a taller one. The same span keeps the
+    /// longer line, then the lower stem.
+    private static func tallestStemLength(_ elements: [Resolved]) -> CGFloat? {
+        var bestSpan = -CGFloat.greatestFiniteMagnitude
+        var bestLength: CGFloat = 0
+        var found = false
+        for item in elements where item.element.kind == .stem {
+            guard let line = item.element.centerline, line.count >= 2 else { continue }
+            let ys = line.map(\.y)
+            guard let low = ys.min(), let high = ys.max() else { continue }
+            let span = high - low
+            var length: CGFloat = 0
+            for index in 1..<line.count {
+                length += hypot(line[index].x - line[index - 1].x, line[index].y - line[index - 1].y)
+            }
+            guard length > 0 else { continue }
+            if !found || span > bestSpan || (span == bestSpan && length > bestLength) {
+                bestSpan = span
+                bestLength = length
+                found = true
+            }
+        }
+        return found ? bestLength : nil
+    }
 
     private static func preservedGuides(at url: URL) throws -> Any? {
         var isDirectory: ObjCBool = false
@@ -388,8 +466,9 @@ enum SeiShinTemplateExporter {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw SeiShinTemplateError.unreadableGuides
         }
-        // Missing guides are normal: the first export of a project has none. A guides value that is
-        // present and unreadable must stop the write, or the next file would drop what was there.
+        // Missing guides are normal. A guides value that is present and unreadable must stop the
+        // write, or the next file would drop what was there. The caller measures a default only
+        // when this returns nil.
         guard object.keys.contains("guides") else { return nil }
         guard let guides = object["guides"] as? [String: Any] else { throw SeiShinTemplateError.unreadableGuides }
         try validateGuides(guides)
@@ -404,7 +483,7 @@ enum SeiShinTemplateExporter {
               let rays = guides["rays"] as? [Any], rays.count == 3 else {
             throw SeiShinTemplateError.unreadableGuides
         }
-        let markers = ["shin": "circle", "soe": "square", "hikae": "triangle"]
+        let markers = StrokeGuides.markers
         var roles = Set<String>()
         for ray in rays {
             guard let ray = ray as? [String: Any], let role = ray["role"] as? String, let marker = markers[role],

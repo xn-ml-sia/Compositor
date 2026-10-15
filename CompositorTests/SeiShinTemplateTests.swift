@@ -4,7 +4,7 @@ import Testing
 
 @MainActor
 struct SeiShinTemplateTests {
-    @Test func theSampleProjectExportsAStemAndAFlowerAndIgnoresTheCursorAndMacGuides() async throws {
+    @Test func theSampleProjectExportsAStemAFlowerAndTheGuidesLineAndIgnoresTheCursorAndMacGuides() async throws {
         let package = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -25,7 +25,10 @@ struct SeiShinTemplateTests {
         #expect((manifest["version"] as? NSNumber)?.intValue == 1)
         #expect(manifest["id"] as? String == "camellia")
         #expect(manifest["name"] as? String == "Camellia")
-        #expect(manifest["guides"] == nil)
+        let guides = try #require(manifest["guides"] as? [String: Any])
+        expectPoint(guides["origin"], 20, 48)
+        #expect(near(guides["shinLength"], 26))
+        try expectStandardRays(guides)
         let body = try String(contentsOf: destination.appendingPathComponent("manifest.json"), encoding: .utf8)
         #expect(!body.contains("horizontal"))
         #expect(!body.contains("D4E5F6A7-B8C9-4D0E-8F2A-3B4C5D6E7F80"))
@@ -102,6 +105,127 @@ struct SeiShinTemplateTests {
         let origin = try #require((still["guides"] as? [String: Any])?["origin"] as? [Any])
         #expect((origin[0] as? NSNumber)?.intValue == 1 && (origin[1] as? NSNumber)?.intValue == 2)
         #expect((still["elements"] as? [[String: Any]])?.first?["id"] as? String == "vase")
+    }
+
+    @Test func aGuidesLineIsWrittenAndTheLastOneReplacesTheTemplate() throws {
+        let snapshot = try vessel(side: 8)
+        let destination = try temporary("Authored.ikebana")
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+        let first = snapshot.script + Data(guidesLine(origin: [4, 5], shinLength: 40).utf8)
+        _ = try SeiShinTemplateExporter.export(snapshot: snapshot.project, script: first, to: destination)
+        var guides = try #require(object(destination.appendingPathComponent("manifest.json"))["guides"] as? [String: Any])
+        expectPoint(guides["origin"], 4, 5)
+        #expect(near(guides["shinLength"], 40))
+        try expectStandardRays(guides)
+
+        let custom = """
+        {"role":"hikae","angle":10,"length":0.4},{"role":"shin","angle":-8,"length":1,"marker":"circle"},{"role":"soe","angle":-30,"length":0.6}
+        """
+        let corrected = first + Data(guidesLine(origin: [6, 7], shinLength: 41, rays: "[\(custom)]").utf8)
+        _ = try SeiShinTemplateExporter.export(snapshot: snapshot.project, script: corrected, to: destination)
+        guides = try #require(object(destination.appendingPathComponent("manifest.json"))["guides"] as? [String: Any])
+        expectPoint(guides["origin"], 6, 7)
+        #expect(near(guides["shinLength"], 41))
+        let rays = try #require(guides["rays"] as? [[String: Any]])
+        #expect(rays[0]["role"] as? String == "hikae" && near(rays[0]["angle"], 10) && near(rays[0]["length"], 0.4) && rays[0]["marker"] as? String == "triangle")
+        #expect(rays[1]["role"] as? String == "shin" && near(rays[1]["angle"], -8) && rays[1]["marker"] as? String == "circle")
+        #expect(rays[2]["role"] as? String == "soe" && near(rays[2]["angle"], -30) && near(rays[2]["length"], 0.6) && rays[2]["marker"] as? String == "square")
+
+        // A later line with no rays replaces the whole object, including angles the earlier line set.
+        let plain = corrected + Data(guidesLine(origin: [8, 9], shinLength: 12).utf8)
+        _ = try SeiShinTemplateExporter.export(snapshot: snapshot.project, script: plain, to: destination)
+        guides = try #require(object(destination.appendingPathComponent("manifest.json"))["guides"] as? [String: Any])
+        expectPoint(guides["origin"], 8, 9)
+        try expectStandardRays(guides)
+
+        var manifest = try object(destination.appendingPathComponent("manifest.json"))
+        let authoredRays = try #require(guides["rays"])
+        manifest["guides"] = ["origin": [1, 2], "shinLength": 3, "note": "hand", "rays": authoredRays] as [String: Any]
+        try write(manifest, to: destination)
+        _ = try SeiShinTemplateExporter.export(snapshot: snapshot.project, script: plain, to: destination)
+        let replaced = try #require(object(destination.appendingPathComponent("manifest.json"))["guides"] as? [String: Any])
+        expectPoint(replaced["origin"], 8, 9)
+        #expect(near(replaced["shinLength"], 12))
+        #expect(replaced["note"] == nil)
+    }
+
+    @Test func missingGuidesUseTheVesselMouthAndTheTallestStem() throws {
+        let planted = try measurablePlant()
+        let destination = try temporary("Measured.ikebana")
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+        _ = try SeiShinTemplateExporter.export(snapshot: planted.project, script: Data(planted.script.utf8), to: destination)
+        let manifest = try object(destination.appendingPathComponent("manifest.json"))
+        let guides = try #require(manifest["guides"] as? [String: Any])
+        // Top vessel bounds are x 10…30, y 30…46. The top four image rows are clear, and the mouth stays on the box.
+        expectPoint(guides["origin"], planted.mouthX, planted.mouthY)
+        #expect(near(guides["shinLength"], planted.shinLength))
+        try expectStandardRays(guides)
+        let body = try String(contentsOf: destination.appendingPathComponent("manifest.json"), encoding: .utf8)
+        #expect(!body.contains("horizontal"))
+        #expect(!body.contains("11111111-2222-4333-8444-555555555555"))
+
+        // A turned vase: the top edge's midpoint rotates about the center. 90° clockwise takes (20, 30) to (28, 38).
+        var turnedLayers = planted.project.manifest.layers
+        let vaseIndex = turnedLayers.count - 1
+        let vase = turnedLayers[vaseIndex]
+        turnedLayers[vaseIndex] = layer(id: vase.id, name: vase.name, origin: vase.transform.origin, size: vase.transform.size, rotation: 90)
+        let turnedProject = ProjectSnapshot(manifest: ProjectManifest(documentID: planted.project.manifest.documentID, width: 100, height: 100,
+                                                                      activeLayerID: vase.id, layers: turnedLayers),
+                                            images: planted.project.images)
+        let turnedURL = try temporary("TurnedMouth.ikebana")
+        defer { try? FileManager.default.removeItem(at: turnedURL.deletingLastPathComponent()) }
+        _ = try SeiShinTemplateExporter.export(snapshot: turnedProject, script: Data(planted.script.utf8), to: turnedURL)
+        let turnedGuides = try #require(object(turnedURL.appendingPathComponent("manifest.json"))["guides"] as? [String: Any])
+        expectPoint(turnedGuides["origin"], 28, 38)
+        #expect(near(turnedGuides["shinLength"], planted.shinLength))
+
+        var hand = try object(destination.appendingPathComponent("manifest.json"))
+        let measuredRays = try #require((hand["guides"] as? [String: Any])?["rays"])
+        hand["guides"] = ["origin": [7, 9], "shinLength": 11, "note": "hand", "rays": measuredRays] as [String: Any]
+        try write(hand, to: destination)
+        _ = try SeiShinTemplateExporter.export(snapshot: planted.project, script: Data(planted.script.utf8), to: destination)
+        let kept = try #require(object(destination.appendingPathComponent("manifest.json"))["guides"] as? [String: Any])
+        expectPoint(kept["origin"], 7, 9)
+        #expect(near(kept["shinLength"], 11))
+        #expect(kept["note"] as? String == "hand")
+    }
+
+    @Test func guidesAreOmittedWithoutAVesselOrAStem() throws {
+        let vase = try vessel(side: 8)
+        let vaseURL = try temporary("VaseOnly.ikebana")
+        defer { try? FileManager.default.removeItem(at: vaseURL.deletingLastPathComponent()) }
+        _ = try SeiShinTemplateExporter.export(snapshot: vase.project, script: vase.script, to: vaseURL)
+        #expect(try object(vaseURL.appendingPathComponent("manifest.json"))["guides"] == nil)
+
+        let stemID = UUID()
+        let image = try rgba(width: 4, height: 4) { _, _ in (0, 0, 0, 255) }
+        let stem = layer(id: stemID, name: "Stem", origin: .zero, size: CGSize(width: 4, height: 4))
+        let project = ProjectSnapshot(manifest: ProjectManifest(documentID: UUID(), width: 16, height: 16, activeLayerID: stemID, layers: [stem]),
+                                      images: [stemID: ImportedImage(image: image, thumbnail: image, name: "Stem")])
+        let stemURL = try temporary("StemOnly.ikebana")
+        defer { try? FileManager.default.removeItem(at: stemURL.deletingLastPathComponent()) }
+        let script = "{\"op\":\"element\",\"id\":\"stem-main\",\"kind\":\"stem\",\"layer\":\"\(stemID.uuidString)\",\"centerline\":[[0,12],[0,0]]}\n"
+        _ = try SeiShinTemplateExporter.export(snapshot: project, script: Data(script.utf8), to: stemURL)
+        #expect(try object(stemURL.appendingPathComponent("manifest.json"))["guides"] == nil)
+    }
+
+    @Test func aGuidesLineThatIsNotValidFailsAndLeavesTheTemplate() throws {
+        let snapshot = try vessel(side: 8)
+        let destination = try temporary("BadGuides.ikebana")
+        defer { try? FileManager.default.removeItem(at: destination.deletingLastPathComponent()) }
+        let good = snapshot.script + Data(guidesLine(origin: [4, 5], shinLength: 40).utf8)
+        _ = try SeiShinTemplateExporter.export(snapshot: snapshot.project, script: good, to: destination)
+        let missing = String(decoding: snapshot.script, as: UTF8.self) + "{\"op\":\"guides\",\"origin\":[1,2]}\n"
+        let reason = failure { _ = try SeiShinTemplateExporter.export(snapshot: snapshot.project, script: Data(missing.utf8), to: destination) }
+        #expect(reason.contains("line 2") && reason.contains("shinLength"))
+        let guides = try #require(object(destination.appendingPathComponent("manifest.json"))["guides"] as? [String: Any])
+        expectPoint(guides["origin"], 4, 5)
+
+        let brokenJSON = String(decoding: snapshot.script, as: UTF8.self) + "{\"op\":\"guides\"\n"
+        #expect(failure { _ = try SeiShinTemplateExporter.export(snapshot: snapshot.project, script: Data(brokenJSON.utf8), to: destination) }.contains("not valid JSON"))
+        let wrongMarker = String(decoding: snapshot.script, as: UTF8.self) + guidesLine(origin: [1, 2], shinLength: 10, rays: "[[\"role\":\"shin\",\"angle\":0,\"length\":1,\"marker\":\"star\"],[\"role\":\"soe\",\"angle\":0,\"length\":1],[\"role\":\"hikae\",\"angle\":0,\"length\":1]]")
+        #expect(failure { _ = try SeiShinTemplateExporter.export(snapshot: snapshot.project, script: Data(wrongMarker.utf8), to: destination) }.contains("circle"))
+        expectPoint(try #require(object(destination.appendingPathComponent("manifest.json"))["guides"] as? [String: Any])["origin"], 4, 5)
     }
 
     @Test func documentPointsLandInTheTrimmedImage() throws {
@@ -305,6 +429,54 @@ struct SeiShinTemplateTests {
         } catch {
             return error.localizedDescription
         }
+    }
+
+    private struct Measured {
+        var project: ProjectSnapshot
+        var script: String
+        var mouthX: Double
+        var mouthY: Double
+        var shinLength: Double
+    }
+
+    /// Two vessels and three stems. The mouth is the top vessel's top edge, not its opaque pixels and not the lower vase.
+    /// Shin is the taller centerline, not the longer one that lies flat and not the shorter one with the same span.
+    private func measurablePlant() throws -> Measured {
+        let lowerID = UUID(), lowID = UUID(), tallID = UUID(), longID = UUID(), topID = UUID()
+        let square = try rgba(width: 4, height: 4) { _, _ in (230, 230, 230, 255) }
+        let vase = try rgba(width: 20, height: 16) { _, y in y < 4 ? (0, 0, 0, 0) : (240, 230, 220, 255) }
+        func picture(_ image: CGImage, _ name: String) -> ImportedImage { ImportedImage(image: image, thumbnail: image, name: name) }
+        let lower = layer(id: lowerID, name: "Back vase", origin: CGPoint(x: 0, y: 80), size: CGSize(width: 10, height: 10))
+        let low = layer(id: lowID, name: "Low", origin: .zero, size: CGSize(width: 4, height: 4))
+        let tall = layer(id: tallID, name: "Tall", origin: .zero, size: CGSize(width: 4, height: 4))
+        let long = layer(id: longID, name: "Long", origin: .zero, size: CGSize(width: 4, height: 4))
+        let top = layer(id: topID, name: "Vase", origin: CGPoint(x: 10, y: 30), size: CGSize(width: 20, height: 16))
+        let guide = CanvasGuide(id: UUID(uuidString: "11111111-2222-4333-8444-555555555555")!, axis: .horizontal, position: 7)
+        let project = ProjectSnapshot(manifest: ProjectManifest(documentID: UUID(), width: 100, height: 100, activeLayerID: topID,
+                                                                layers: [lower, low, tall, long, top], guides: [guide]),
+                                      images: [lowerID: picture(square, "Back vase"), lowID: picture(square, "Low"),
+                                               tallID: picture(square, "Tall"), longID: picture(square, "Long"),
+                                               topID: picture(vase, "Vase")])
+        let script = element("vase-back", kind: "vessel", layer: lowerID)
+            + element("stem-low", kind: "stem", layer: lowID, centerline: "[[8,28],[8,4]]")
+            + element("stem-tall", kind: "stem", layer: tallID, centerline: "[[22,28],[40,4]]")
+            + element("stem-long", kind: "stem", layer: longID, centerline: "[[0,50],[80,50]]")
+            + element("vase", kind: "vessel", layer: topID)
+        return Measured(project: project, script: script, mouthX: 20, mouthY: 30, shinLength: 30)
+    }
+
+    private func guidesLine(origin: [Double], shinLength: Double, rays: String? = nil) -> String {
+        var fields = "\"op\":\"guides\",\"origin\":[\(origin[0]),\(origin[1])],\"shinLength\":\(shinLength)"
+        if let rays { fields += ",\"rays\":\(rays)" }
+        return "{" + fields + "}\n"
+    }
+
+    private func expectStandardRays(_ guides: [String: Any]) throws {
+        let rays = try #require(guides["rays"] as? [[String: Any]])
+        #expect(rays.count == 3)
+        #expect(rays[0]["role"] as? String == "shin" && near(rays[0]["angle"], -12) && near(rays[0]["length"], 1) && rays[0]["marker"] as? String == "circle")
+        #expect(rays[1]["role"] as? String == "soe" && near(rays[1]["angle"], -45) && near(rays[1]["length"], 0.75) && rays[1]["marker"] as? String == "square")
+        #expect(rays[2]["role"] as? String == "hikae" && near(rays[2]["angle"], 75) && near(rays[2]["length"], 0.5) && rays[2]["marker"] as? String == "triangle")
     }
 
     private func element(_ id: String, kind: String, layer: UUID, parent: String? = nil, anchor: [Double]? = nil, centerline: String? = nil) -> String {

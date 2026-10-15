@@ -167,6 +167,30 @@ struct StrokeElement: Equatable, Sendable {
     var attach: CGFloat?
 }
 
+/// Shin, Soe, and Hikae for a Sei & Shin template. Angles are degrees off straight up, clockwise
+/// positive. Ray lengths are fractions of `shinLength`. Playback ignores the line; export writes it.
+struct StrokeGuides: Equatable, Sendable {
+    struct Ray: Equatable, Sendable {
+        var role: String
+        var angle: CGFloat
+        var length: CGFloat
+        var marker: String
+    }
+
+    var origin: CGPoint
+    var shinLength: CGFloat
+    var rays: [Ray]
+
+    static let markers = ["shin": "circle", "soe": "square", "hikae": "triangle"]
+
+    /// The front elevation: Shin and Soe lean left of vertical, Hikae leans right.
+    static let standardRays = [
+        Ray(role: "shin", angle: -12, length: 1, marker: "circle"),
+        Ray(role: "soe", angle: -45, length: 0.75, marker: "square"),
+        Ray(role: "hikae", angle: 75, length: 0.5, marker: "triangle")
+    ]
+}
+
 enum StrokeOp: Equatable, Sendable {
     case layer(name: String, id: UUID?)
     case brush(StrokeScriptBrush)
@@ -178,6 +202,7 @@ enum StrokeOp: Equatable, Sendable {
     case flowLine(StrokeFlowLine)
     case figure(StrokeShape)
     case element(StrokeElement)
+    case guides(StrokeGuides)
 }
 
 struct StrokeScriptItem: Equatable, Sendable {
@@ -303,6 +328,9 @@ enum StrokeScriptReader {
         case "element":
             guard case .success(let element) = readElement(object) else { return nil }
             return .element(element)
+        case "guides":
+            guard case .success(let guides) = readGuides(object) else { return nil }
+            return .guides(guides)
         default:
             return nil
         }
@@ -352,6 +380,56 @@ enum StrokeScriptReader {
             attach = nil
         }
         return .success(StrokeElement(id: id, kind: kind, layer: layer, parent: parent, anchor: anchor, centerline: centerline, attach: attach))
+    }
+
+    /// A valid `guides` line, or why it is not one. Playback treats a failure as an unknown line and skips it.
+    /// Export fails on that same failure. Omitted rays are the front elevation.
+    static func readGuides(_ object: [String: Any]) -> Result<StrokeGuides, StrokeElementFailure> {
+        guard object["origin"] != nil else { return .failure(StrokeElementFailure("A guides line needs an origin.")) }
+        guard let origin = point(object["origin"]) else {
+            return .failure(StrokeElementFailure("A guides line has an origin that is not a point."))
+        }
+        guard object["shinLength"] != nil else { return .failure(StrokeElementFailure("A guides line needs a shinLength.")) }
+        guard let shin = double(object["shinLength"]), shin.isFinite, shin > 0 else {
+            return .failure(StrokeElementFailure("A guides line has a shinLength that is not a positive length."))
+        }
+        let rays: [StrokeGuides.Ray]
+        if object["rays"] != nil {
+            switch guideRays(object["rays"]) {
+            case .success(let parsed): rays = parsed
+            case .failure(let reason): return .failure(reason)
+            }
+        } else {
+            rays = StrokeGuides.standardRays
+        }
+        return .success(StrokeGuides(origin: origin, shinLength: CGFloat(shin), rays: rays))
+    }
+
+    private static func guideRays(_ value: Any?) -> Result<[StrokeGuides.Ray], StrokeElementFailure> {
+        guard let list = value as? [Any], list.count == 3 else {
+            return .failure(StrokeElementFailure("A guides line needs three rays: Shin, Soe, and Hikae."))
+        }
+        var rays: [StrokeGuides.Ray] = []
+        var roles = Set<String>()
+        for item in list {
+            guard let ray = item as? [String: Any], let role = string(ray["role"]), let marker = StrokeGuides.markers[role] else {
+                return .failure(StrokeElementFailure("A guides ray needs a role of shin, soe, or hikae."))
+            }
+            guard roles.insert(role).inserted else {
+                return .failure(StrokeElementFailure("A guides line repeats the \(role) ray."))
+            }
+            if ray["marker"] != nil, string(ray["marker"]) != marker {
+                return .failure(StrokeElementFailure("The \(role) ray is marked with a \(marker)."))
+            }
+            guard let angle = double(ray["angle"]), angle.isFinite else {
+                return .failure(StrokeElementFailure("The \(role) ray needs an angle."))
+            }
+            guard let length = double(ray["length"]), length.isFinite, length > 0 else {
+                return .failure(StrokeElementFailure("The \(role) ray needs a positive length."))
+            }
+            rays.append(StrokeGuides.Ray(role: role, angle: CGFloat(angle), length: CGFloat(length), marker: marker))
+        }
+        return .success(rays)
     }
 
     private static func point(_ value: Any?) -> CGPoint? {
