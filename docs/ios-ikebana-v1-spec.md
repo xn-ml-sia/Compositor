@@ -45,7 +45,7 @@ These facts change the model the phone would otherwise inherit:
 - **A folder is not a stem.** Version 2 `parentID` must point at a group. A group has no image and is pass-through: children are drawn on their own, not as one picture. Selecting a folder on the Mac rewrites each descendant's own `transform` (`LayerTransform.following`). That is an affine edit in one session. It is not a saved parent-relative constraint, and it cannot bend. iOS parent links are new data in the template. They are not `.comp` `parentID`s.
 - **Tags do not belong in `manifest.json`.** The app re-encodes `ProjectLayerRecord` on save, so unknown manifest keys are dropped. An extra file in the package is dropped too: the atomic save writes only `manifest.json`, `images/`, `QuickLook/`, `strokes.jsonl`, and `strokes.cursor`.
 - **Tags do belong in `strokes.jsonl`.** Unknown keys on a known op are ignored. An unknown `op` is skipped. The bytes survive the next save. The exporter reads the file from byte 0 and ignores `strokes.cursor`.
-- **Mac guides are not these rays.** Version 8 `guides` are unnamed horizontal or vertical lines (`id`, `axis`, `position` in document pixels). The exporter does not read them. Ikebana guide angles and lengths are authored on the template, not in the `.comp`.
+- **Mac guides are not these rays.** Version 8 `guides` are unnamed horizontal or vertical lines (`id`, `axis`, `position` in document pixels). The exporter does not read them. The rays are a `guides` line in `strokes.jsonl`. With no such line, and no `guides` object already on the template, export measures the vessel mouth and the tallest stem.
 - **Mac PNG export** (`ImageExporter.pngData`) is the canvas in pixels, sRGB, alpha kept, guides omitted, DPI from `resolution` or 72. Quick Look's JPEG is a different thing (flattened on white, long side ≤ 1024).
 - **Nothing on the Mac bends a centerline.** `MetalWarp` is smudge and liquify. `DistortWarp` is a four-corner distort. Neither is a ribbon warp, and neither shader should be copied to iOS.
 
@@ -163,7 +163,7 @@ For every element:
 - `scale` is uniform. `1` means one image pixel per canvas pixel.
 - `centerline` is required for `stem`, forbidden otherwise. At least two points, in local image pixels, base first, tip last. Segment lengths must be positive. It should run through the opaque art. The exporter warns if an opaque pixel's nearest centerline point is farther than the stem's own half-width pad (see Bend).
 
-`guides` is omitted when the template has none. It is not derived from the Mac document's `guides` array. The exporter leaves an existing `guides` object in place when it rewrites a template.
+`guides` comes from a `guides` line in the project's `strokes.jsonl`. That line is written onto the template and replaces an object already there. With no `guides` line, the exporter leaves an existing `guides` object in place when it rewrites a template, so rays added by hand survive a re-export. With no line and no object, it writes a default: `origin` is the vessel mouth and `shinLength` is the tallest stem, with the angles and length fractions below. `guides` is omitted only when that default cannot be measured (no vessel element, or no stem). It is not derived from the Mac document's `guides` array.
 
 `origin` is the vessel mouth in canvas pixels. `shinLength` is Shin's length in those same pixels. Each ray's `length` is a fraction of `shinLength`: Shin 1, Soe 3/4, Hikae 1/2. `angle` is degrees off straight up, positive clockwise (to the right on screen). The unmirrored example is the front elevation (立面図): Shin and Soe lean to the same side, both left of vertical, Shin at −12° (inside the usual 10°–15° lean) and Soe at −45°; Hikae leans to the opposite side, at +75°. The app draws the stored angles and does not clamp them. Markers are Shin's circle (真), Soe's square (副), and Hikae's triangle (控). The top plan in the same diagram is not a second set of rays, and the shorter side stems are not guides.
 
@@ -204,6 +204,18 @@ The exporter converts document-pixel anchors and centerlines into the trimmed PN
 | New keys on the layer record, format version 12 | The right long-term home, once the app round-trips them. Until then a save strips unknown manifest keys. Not usable for templates authored before that change. |
 | `elements.json` beside the images inside the `.comp` | The next save deletes it. The package replacement does not keep unknown files. |
 | Skeletonize the PNG, cluster strokes, guess parents | Watercolor rims and hatches do not have a single spine, and no clustering can know that a flower belongs to a stem. |
+
+### Guides in the Mac document
+
+Write a `guides` line into the same `strokes.jsonl`. Playback skips it, as it skips `element`. The exporter reads it from byte 0. A later `guides` line replaces an earlier one whole, so a correction is appended rather than merged. A line that says `guides` but is not valid fails the export and names the line. How a script appends lines is in [Stroke playback](stroke-playback.md).
+
+```json
+{"op":"guides","origin":[640,1580],"shinLength":900}
+```
+
+`origin` is the vessel mouth in document pixels. `shinLength` is Shin's length in those pixels and has to be positive. Omit `rays` and the exporter writes the front elevation above: Shin −12° at length 1, Soe −45° at 3/4, Hikae +75° at 1/2, markers circle, square, and triangle. To store other angles, include `rays` with all three roles. Each ray's `length` is a fraction of `shinLength` and has to be positive. The marker is fixed for the role; omit it and the exporter fills it in.
+
+With no `guides` line, export keeps a `guides` object already on the template. With neither, it measures one. The origin is the midpoint of the top edge of the topmost vessel layer's bounds. Rotation carries that edge about the layer center, so a turned vase keeps its mouth on the rim. Flips mirror the pixels inside those bounds and do not move the point. Empty pixels inside the box count: this is the layer bounds, not the trimmed opaque art, so a layer with blank pixels above the rim should carry a `guides` line. `shinLength` is the centerline length of the tallest stem, in document pixels. Tallest means the greatest vertical span of the centerline; the same span keeps the longer line, then the lower stem. A long stem that leans over loses to a taller one. Mac alignment guides are not consulted. A project with no vessel element or no stem still omits `guides`.
 
 ## Gestures
 
@@ -341,7 +353,7 @@ Suggested types, all in an iOS app target:
 | `ArrangementStore` | Read and write the autosave. |
 | `PNGExport` | Offscreen pass at template size, paper clear color, ImageIO write. |
 
-The Mac exporter is a Mac-side tool in the existing app or a script next to it. It reads a `.comp` with the same rules as `ProjectStore` (it does not have to link the iOS types), scans `strokes.jsonl` from byte 0 for `op: element`, renders each tagged layer, and writes the `.ikebana` folder. Milestone 1 is that tool plus three templates run through it.
+The Mac exporter is a Mac-side tool in the existing app or a script next to it. It reads a `.comp` with the same rules as `ProjectStore` (it does not have to link the iOS types), scans `strokes.jsonl` from byte 0 for `op: element` and `op: guides`, renders each tagged layer, and writes the `.ikebana` folder. Milestone 1 is that tool plus three templates run through it.
 
 Portrait only. One arrangement on screen. No brush, no document browser beyond the template list.
 
@@ -349,7 +361,7 @@ Portrait only. One arrangement on screen. No brush, no document browser beyond t
 
 Each milestone is usable on its own. Later ones do not reopen the format except to fill fields the earlier milestone left at rest.
 
-1. **Mac export, three templates.** `element` lines in three real `.comp` projects. Exporter writes `.ikebana` packages: trimmed PNGs, parent links, anchors, z-order, stem centerlines. It does not read Mac guides. `guides` is authored on the template, and a re-export keeps that object. A template that violates the authoring rules fails with a specific message. iOS is not required to draw yet. Convert three arrangements that already look right on the Mac canvas. The checked-in sample is `examples/SeiShinSample.comp`. A real arrangement is converted on a Mac that has its stroke script: the script appends the `element` lines, and the exporter does not infer centerlines.
+1. **Mac export, three templates.** `element` lines in three real `.comp` projects. Exporter writes `.ikebana` packages: trimmed PNGs, parent links, anchors, z-order, stem centerlines. It does not read Mac alignment guides. A `guides` line in `strokes.jsonl` is written onto the template. With no such line, a `guides` object already on the template is kept, and a template that has neither gets the vessel mouth and the tallest stem. A template that violates the authoring rules fails with a specific message. iOS is not required to draw yet. Convert three arrangements that already look right on the Mac canvas. The checked-in sample is `examples/SeiShinSample.comp`. A real arrangement is converted on a Mac that has its stroke script: the script appends the `element` lines and, when the rays are known, a `guides` line. The exporter does not infer centerlines.
 2. **Canvas: select, move, scale, rotate, flip.** Bundled templates drawn with Metal as affine sprites (bend identity). Hit testing, the gesture table except the tip handle, children following a rigid stem. Paper background. Portrait iPhone.
 3. **Bend.** Tip handle, FABRIK, mesh warp, children riding `attach`. Rest pose stays the PNG. The stretch behavior above is what "done" means: length held, flower not smeared.
 4. **Duplicate, delete, undo, redo, reset.** Session undo stack. Children duplicate and delete with the stem.

@@ -50,8 +50,19 @@ struct StrokeScriptTests {
         #expect(child.kind == .flower && child.parent == "stem-main" && child.attach == nil && child.centerline == nil)
         #expect(StrokeScriptReader.parse("{\"op\":\"element\",\"id\":\"nope\"}") == nil)
         #expect(StrokeScriptReader.parse("{\"op\":\"element\",\"id\":\"x\",\"kind\":\"twig\",\"layer\":\"L\"}") == nil)
-        let skipped = StrokeScriptReader.pull(Data("{\"op\":\"element\",\"id\":\"nope\"}\n".utf8), from: 0)
-        #expect(skipped.items.count == 1 && skipped.items[0].op == nil)
+        let guides = try #require(StrokeScriptReader.parse("{\"op\":\"guides\",\"origin\":[20,48],\"shinLength\":26,\"note\":\"kept\"}"))
+        guard case .guides(let rays) = guides else { Issue.record("expected guides"); return }
+        #expect(rays.origin == CGPoint(x: 20, y: 48) && rays.shinLength == 26)
+        #expect(rays.rays.map(\.role) == StrokeGuides.standardRays.map(\.role))
+        #expect(rays.rays[0].angle == -12 && rays.rays[1].length == 0.75 && rays.rays[2].marker == "triangle")
+        let custom = try #require(StrokeScriptReader.parse("{\"op\":\"guides\",\"origin\":[1,2],\"shinLength\":10,\"rays\":[{\"role\":\"soe\",\"angle\":-20,\"length\":0.5},{\"role\":\"shin\",\"angle\":3,\"length\":1},{\"role\":\"hikae\",\"angle\":40,\"length\":0.25}]}"))
+        guard case .guides(let turned) = custom else { Issue.record("expected custom guides"); return }
+        #expect(turned.rays.map(\.role) == ["soe", "shin", "hikae"])
+        #expect(turned.rays[0].angle == -20 && turned.rays[0].marker == "square" && turned.rays[2].length == 0.25)
+        #expect(StrokeScriptReader.parse("{\"op\":\"guides\",\"origin\":[1]}") == nil)
+        #expect(StrokeScriptReader.parse("{\"op\":\"guides\",\"origin\":[1,2],\"shinLength\":0}") == nil)
+        let skipped = StrokeScriptReader.pull(Data("{\"op\":\"element\",\"id\":\"nope\"}\n{\"op\":\"guides\"}\n".utf8), from: 0)
+        #expect(skipped.items.count == 2 && skipped.items.allSatisfy { $0.op == nil })
         #expect(skipped.items[0].error == "Skipped a stroke line that is not a known op.")
     }
 
@@ -62,6 +73,17 @@ struct StrokeScriptTests {
                                     centerline: [CGPoint(x: 4, y: 20), CGPoint(x: 4, y: 4)], attach: nil)
         let before = session.history.undoCount
         let applied = await session.playStrokeOp(.element(element), instant: true)
+        #expect(applied)
+        #expect(session.brushError == nil)
+        #expect(session.history.undoCount == before)
+    }
+
+    @Test func aGuidesLineDoesNotPaintOrAddUndo() async throws {
+        let session = EditorSession()
+        session.createDocument(width: 32, height: 32, emptyLayer: true)
+        let guides = StrokeGuides(origin: CGPoint(x: 16, y: 28), shinLength: 18, rays: StrokeGuides.standardRays)
+        let before = session.history.undoCount
+        let applied = await session.playStrokeOp(.guides(guides), instant: true)
         #expect(applied)
         #expect(session.brushError == nil)
         #expect(session.history.undoCount == before)

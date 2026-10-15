@@ -129,7 +129,7 @@ Tags one layer as a part of a Sei & Shin template. Playback does not paint it, d
 
 `centerline` is document pixels, the same space as `stroke` points, base first and tip last, at least two points, each segment longer than zero. A stem needs one. Nothing else may have one. The exporter uses the first point as the stem's anchor. An `anchor` on a stem line is left in the file and ignored. On any other kind, `anchor` is the pivot in document pixels; omit it and the pivot is the center of the layer. `attach` is 0…1 along the parent's centerline. Omit it and the child sits at the tip.
 
-Append lines. Do not rewrite the file. Each line needs its newline. `examples/SeiShinSample.comp` is a small tagged project: a stem, a flower, an untagged paper layer, and a Mac guide the exporter leaves out. Its `strokes.cursor` is past the end of the file, so Play has nothing to paint and the export still reads both tags.
+Append lines. Do not rewrite the file. Each line needs its newline. `examples/SeiShinSample.comp` is a small tagged project: a stem, a flower, an untagged paper layer, a Mac guide the exporter leaves out, and a `guides` line for the rays. Its `strokes.cursor` is past the end of the file, so Play has nothing to paint and the export still reads the tags and the guides.
 
 A Python script appends one tag like this:
 
@@ -148,6 +148,24 @@ with open("Arrangement.comp/strokes.jsonl", "a", encoding="utf-8") as script:
 ```
 
 Then open the project and choose File > Export Sei & Shin Template. The template format is in [the ikebana spec](ios-ikebana-v1-spec.md).
+
+### `guides`
+
+The Shin, Soe, and Hikae rays for a Sei & Shin template. Playback does not paint it, does not change the brush, and does not add an undo step. The cursor still moves past the line. File > Export Sei & Shin Template reads every `guides` line from the start of the file. The last one is written, and it replaces an earlier one whole. A line that says `guides` but is not valid is skipped like any other unknown op; the exporter stops on that line and says which one.
+
+```json
+{"op":"guides","origin":[640,1580],"shinLength":900}
+```
+
+`origin` is the vessel mouth in document pixels, the same space as a `stroke` point: `[x, y]`, top-left origin, y down. `shinLength` is Shin's length in those pixels and has to be greater than zero. Omit `rays` and the export writes the front elevation. Angles are degrees off straight up, positive clockwise (to the right). Shin is −12° and as long as `shinLength`. Soe is −45° and three quarters of that length. Hikae is +75° and half of it. The markers are Shin's circle, Soe's square, and Hikae's triangle.
+
+To store other angles or length fractions, include all three rays. Append a correction the same way as an `element` line; it replaces the whole object rather than merging. The marker may be omitted; the role fixes it.
+
+```json
+{"op":"guides","origin":[640,1580],"shinLength":900,"rays":[{"role":"shin","angle":-12,"length":1},{"role":"soe","angle":-45,"length":0.75},{"role":"hikae","angle":75,"length":0.5}]}
+```
+
+With no `guides` line, export keeps a `guides` object already on the template. With neither, it measures one: the origin is the midpoint of the top edge of the topmost vessel layer's bounds, and `shinLength` is the centerline length of the tallest stem. The Mac document's alignment guides are not these rays.
 
 ## While it plays
 

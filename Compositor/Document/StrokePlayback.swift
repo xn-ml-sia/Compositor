@@ -84,8 +84,8 @@ extension EditorSession {
             if await playFlowLine(line, instant: instant) == false { return false }
         case .figure(let shape):
             if await playFigure(shape, instant: instant) == false { return false }
-        case .element:
-            // A Sei & Shin tag. The pixels are already on the layer; playback does not paint this line.
+        case .element(_), .guides(_):
+            // A Sei & Shin tag: one part, or the guide rays. The pixels are already on the layer; playback does not paint this line.
             break
         }
         return true
